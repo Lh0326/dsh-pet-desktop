@@ -286,8 +286,8 @@ var XiaoguaiService = class extends Service {
       }
       case "dragEnd":
         if (payload?.right !== void 0 && payload?.bottom !== void 0) {
-          this.display.right = Math.max(0, Math.round(payload.right));
-          this.display.bottom = Math.max(0, Math.round(payload.bottom));
+          this.display.right = Math.max(0, Math.min(Math.round(payload.right), 4e3));
+          this.display.bottom = Math.max(0, Math.min(Math.round(payload.bottom), 4e3));
           this.save();
         }
         return { animation: this.state().animation };

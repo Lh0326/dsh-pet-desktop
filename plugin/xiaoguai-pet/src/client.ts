@@ -92,10 +92,22 @@ function preloadSpritesheet(a: Animation): void {
   img.src = `/xiaoguai/assets/${a}_spritesheet.png`
 }
 
+/** 单例守护：loader 可能执行 factory 两次（页面 reload/插件重启用期间旧实例未及 dispose），
+ *  两次 apply 会产生两套 handler → 每个指针事件被处理两遍 → 拖拽位移×2（实测实锤）。
+ *  用窗口级令牌：新 apply 存活，旧 apply 的 interval/poll 全部自杀。 */
+interface PetInstance { alive: boolean; timer: number }
+let instance: PetInstance | null = null
+
 export function apply(): (() => void) | void {
-  // 双挂载防护：dsh 页面热重载/插件重启用时，旧浮层必须先清理，
-  // 否则两个 React root 各画一只小乖（"分身"的第一来源）
+  // 1) 干掉旧实例（含其 DOM 与轮询）
+  if (instance !== null) {
+    instance.alive = false
+    window.clearInterval(instance.timer)
+  }
   document.querySelectorAll('div[data-xiaoguai-pet-root]').forEach(el => el.remove())
+
+  const me: PetInstance = { alive: true, timer: 0 }
+  instance = me
   void loadMetas()
 
   const container = document.createElement('div')
@@ -105,19 +117,22 @@ export function apply(): (() => void) | void {
   root.render(createElement(XiaoguaiEntry))
 
   const poll = (): void => {
+    if (!me.alive) return
     API.state().then(s => {
-      setUi({ snapshot: s })
+      if (me.alive) setUi({ snapshot: s })
     }, () => { /* transport 失败下轮重试 */ })
   }
   poll()
-  const timer = window.setInterval(() => {
-    if (document.visibilityState === 'visible') poll()
+  me.timer = window.setInterval(() => {
+    if (me.alive && document.visibilityState === 'visible') poll()
   }, 800)
 
   return () => {
-    window.clearInterval(timer)
+    me.alive = false
+    window.clearInterval(me.timer)
     root.unmount()
     container.remove()
+    if (instance === me) instance = null
   }
 }
 
@@ -172,6 +187,8 @@ function XiaoguaiFloat(): ReactElement {
    *  鼠标从人物移到面板的路径全程都在 hit 区内 */
   const showPanel = (): void => {
     if (hidePanelTimer.current !== null) { window.clearTimeout(hidePanelTimer.current); hidePanelTimer.current = null }
+    // 暂时态(摸头/投喂/庆祝)播放期间不弹面板,动画完整可见
+    if (state.local !== null && state.local !== 'pet-drag') return
     setHovered(true)
   }
   const scheduleHidePanel = (): void => {
@@ -251,7 +268,12 @@ function XiaoguaiFloat(): ReactElement {
   }
 
   const size = display.size
-  const pos = dragPos ?? { right: display.right, bottom: display.bottom }
+  const rawPos = dragPos ?? { right: display.right, bottom: display.bottom }
+  // 渲染前钳制: 持久化位置可能来自旧窗口尺寸/异常拖拽,一律拉回视口内
+  const pos = {
+    right: Math.max(0, Math.min(rawPos.right, window.innerWidth - 60)),
+    bottom: Math.max(0, Math.min(rawPos.bottom, window.innerHeight - 60)),
+  }
 
   const float = createElement('div', {
     ref: floatRef,
@@ -283,7 +305,6 @@ function XiaoguaiFloat(): ReactElement {
         setHovered(false)   // 按下即收面板：摸头气泡不被面板遮挡（用户反馈#3）
         preloadSpritesheet('pet-drag')
         // 锚点取"当前真实渲染位置"——DOM rect 是唯一不骗人的来源
-        // （stale state / stale closure 在轮询重渲染下都会给出过期锚点 = 挪一点飞很远的根因）
         const rect = floatRef.current?.getBoundingClientRect()
         const current = rect !== undefined
           ? { right: Math.max(0, window.innerWidth - rect.right), bottom: Math.max(0, window.innerHeight - rect.bottom) }
@@ -304,15 +325,25 @@ function XiaoguaiFloat(): ReactElement {
         }
         const right = Math.max(0, Math.min(drag.right - dx, window.innerWidth - 40))
         const bottom = Math.max(0, Math.min(drag.bottom - dy, window.innerHeight - 40))
-        // 唯一真相 = dragRef（ref 无闭包过期问题）；state 只做渲染镜像
-        dragRef.current = { startX: drag.startX, startY: drag.startY, right, bottom }
+        // 铁律（鲸鱼娘同款）：move 中绝不改写 dragRef！
+        // dragRef.right 必须保持"按下时的锚点"，位移 = 锚点 - (client - startX)。
+        // 一旦在 move 里更新 right，下一步就从新位置起算 → 位移按步幅累加，
+        // 鼠标折返时误差指数放大 = "快速漂移"的真凶（数学实锤：1160+80≠1120+80）。
         setDragPos({ right, bottom })
       },
-      onPointerUp: () => {
+      onPointerUp: (e: React.PointerEvent<HTMLDivElement>) => {
         if (dragRef.current === null) return
         const wasDrag = draggedRef.current
+        // 松手位置：直接用锚点+总位移重算（与最后一次 move 同公式），
+        // 不依赖任何中间状态
+        const drag = dragRef.current
+        const dx = e.clientX - drag.startX
+        const dy = e.clientY - drag.startY
         const finalPos = wasDrag
-          ? { right: dragRef.current.right, bottom: dragRef.current.bottom }
+          ? {
+              right: Math.max(0, Math.min(drag.right - dx, window.innerWidth - 40)),
+              bottom: Math.max(0, Math.min(drag.bottom - dy, window.innerHeight - 40)),
+            }
           : null
         dragRef.current = null
         setUi({ local: null })   // 拖拽结束一律回落

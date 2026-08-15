@@ -206,8 +206,9 @@ export class XiaoguaiService extends Service {
       }
       case 'dragEnd':
         if (payload?.right !== undefined && payload?.bottom !== undefined) {
-          this.display.right = Math.max(0, Math.round(payload.right))
-          this.display.bottom = Math.max(0, Math.round(payload.bottom))
+          // 持久化前钳制到合理范围（视口内）：异常位置不出现在存储里
+          this.display.right = Math.max(0, Math.min(Math.round(payload.right), 4000))
+          this.display.bottom = Math.max(0, Math.min(Math.round(payload.bottom), 4000))
           this.save()
         }
         return { animation: this.state().animation }

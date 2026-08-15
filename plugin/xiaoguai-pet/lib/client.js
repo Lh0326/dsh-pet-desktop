@@ -72,8 +72,15 @@ function preloadSpritesheet(a) {
   const img = new Image();
   img.src = `/xiaoguai/assets/${a}_spritesheet.png`;
 }
+var instance = null;
 function apply() {
+  if (instance !== null) {
+    instance.alive = false;
+    window.clearInterval(instance.timer);
+  }
   document.querySelectorAll("div[data-xiaoguai-pet-root]").forEach((el) => el.remove());
+  const me = { alive: true, timer: 0 };
+  instance = me;
   void loadMetas();
   const container = document.createElement("div");
   container.dataset.xiaoguaiPetRoot = "";
@@ -81,19 +88,22 @@ function apply() {
   const root = (0, import_client.createRoot)(container);
   root.render((0, import_react.createElement)(XiaoguaiEntry));
   const poll = () => {
+    if (!me.alive) return;
     API.state().then((s) => {
-      setUi({ snapshot: s });
+      if (me.alive) setUi({ snapshot: s });
     }, () => {
     });
   };
   poll();
-  const timer = window.setInterval(() => {
-    if (document.visibilityState === "visible") poll();
+  me.timer = window.setInterval(() => {
+    if (me.alive && document.visibilityState === "visible") poll();
   }, 800);
   return () => {
-    window.clearInterval(timer);
+    me.alive = false;
+    window.clearInterval(me.timer);
     root.unmount();
     container.remove();
+    if (instance === me) instance = null;
   };
 }
 function XiaoguaiEntry() {
@@ -151,6 +161,7 @@ function XiaoguaiFloat() {
       window.clearTimeout(hidePanelTimer.current);
       hidePanelTimer.current = null;
     }
+    if (state.local !== null && state.local !== "pet-drag") return;
     setHovered(true);
   };
   const scheduleHidePanel = () => {
@@ -228,7 +239,11 @@ function XiaoguaiFloat() {
     setUi({ local: null });
   };
   const size = display.size;
-  const pos = dragPos ?? { right: display.right, bottom: display.bottom };
+  const rawPos = dragPos ?? { right: display.right, bottom: display.bottom };
+  const pos = {
+    right: Math.max(0, Math.min(rawPos.right, window.innerWidth - 60)),
+    bottom: Math.max(0, Math.min(rawPos.bottom, window.innerHeight - 60))
+  };
   const float = (0, import_react.createElement)(
     "div",
     {
@@ -285,13 +300,18 @@ function XiaoguaiFloat() {
         }
         const right = Math.max(0, Math.min(drag.right - dx, window.innerWidth - 40));
         const bottom = Math.max(0, Math.min(drag.bottom - dy, window.innerHeight - 40));
-        dragRef.current = { startX: drag.startX, startY: drag.startY, right, bottom };
         setDragPos({ right, bottom });
       },
-      onPointerUp: () => {
+      onPointerUp: (e) => {
         if (dragRef.current === null) return;
         const wasDrag = draggedRef.current;
-        const finalPos = wasDrag ? { right: dragRef.current.right, bottom: dragRef.current.bottom } : null;
+        const drag = dragRef.current;
+        const dx = e.clientX - drag.startX;
+        const dy = e.clientY - drag.startY;
+        const finalPos = wasDrag ? {
+          right: Math.max(0, Math.min(drag.right - dx, window.innerWidth - 40)),
+          bottom: Math.max(0, Math.min(drag.bottom - dy, window.innerHeight - 40))
+        } : null;
         dragRef.current = null;
         setUi({ local: null });
         if (finalPos !== null) {
