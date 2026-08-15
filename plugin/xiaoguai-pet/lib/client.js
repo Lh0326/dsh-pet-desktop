@@ -132,6 +132,7 @@ function XiaoguaiFloat() {
   const display = snapshot?.display ?? { size: 176, right: 24, bottom: 24, visible: true };
   const animation = state.local ?? snapshot?.animation ?? "idle";
   const spriteRef = (0, import_react.useRef)(null);
+  const floatRef = (0, import_react.useRef)(null);
   const [dragPos, setDragPos] = (0, import_react.useState)(null);
   const dragRef = (0, import_react.useRef)(null);
   const draggedRef = (0, import_react.useRef)(false);
@@ -155,7 +156,15 @@ function XiaoguaiFloat() {
     finished: false
   });
   const animRef = (0, import_react.useRef)(animation);
+  const prevAnimRef = (0, import_react.useRef)(null);
   animRef.current = animation;
+  (0, import_react.useEffect)(() => {
+    if (prevAnimRef.current !== animation && spriteRef.current !== null) {
+      prevAnimRef.current = animation;
+      frameRef.current = { anim: null, index: 0, elapsed: 0, finished: false };
+      spriteRef.current.style.backgroundPosition = "0px 0";
+    }
+  }, [animation]);
   (0, import_react.useEffect)(() => {
     let raf = 0;
     let last = performance.now();
@@ -212,6 +221,7 @@ function XiaoguaiFloat() {
   const float = (0, import_react.createElement)(
     "div",
     {
+      ref: floatRef,
       style: {
         position: "fixed",
         right: pos.right,
@@ -236,7 +246,9 @@ function XiaoguaiFloat() {
         backgroundImage: `url(/xiaoguai/assets/${animation}_spritesheet.png)`,
         backgroundSize: `${size * (metas.get(animation)?.frameCount ?? 1)}px ${size}px`,
         backgroundRepeat: "no-repeat",
-        backgroundPosition: "0 0",
+        // 注意：backgroundPosition 不写在 React style 里——
+        // 帧位置完全由 rAF 循环直写 DOM；React 重渲染（如拖拽更新 pos）会重置
+        // 内联 style 导致闪回第 0 帧/旧位置，出现"两个小乖"残影（bug#2 根因）
         imageRendering: "auto",
         touchAction: "none",
         cursor: dragRef.current === null ? "grab" : "grabbing"
@@ -262,14 +274,20 @@ function XiaoguaiFloat() {
         }
         const right = Math.max(0, Math.min(drag.right - dx, window.innerWidth - 40));
         const bottom = Math.max(0, Math.min(drag.bottom - dy, window.innerHeight - 40));
-        setDragPos({ right, bottom });
+        dragRef.current = { ...drag, right, bottom };
+        if (floatRef.current !== null) {
+          floatRef.current.style.right = `${right}px`;
+          floatRef.current.style.bottom = `${bottom}px`;
+        }
       },
       onPointerUp: () => {
         if (dragRef.current === null) return;
         const wasDrag = draggedRef.current;
+        const finalPos = { right: dragRef.current.right, bottom: dragRef.current.bottom };
         clearDrag();
-        if (wasDrag && dragPos !== null) {
-          void API.interact("dragEnd", dragPos);
+        if (wasDrag) {
+          setDragPos(finalPos);
+          void API.interact("dragEnd", finalPos);
         } else if (!wasDrag) {
           void API.interact("pat").then((r) => {
             if (r.bubble) setUi({ bubble: r.bubble, bubbleAt: Date.now() });

@@ -58,7 +58,8 @@ function rankOf(points: number): { name: string; emoji: string } {
 }
 
 const PAT_COOLDOWN_MS = 3000
-const FEED_COOLDOWN_MS = 10000
+/** 投喂冷却与喂食动画时长对齐（24帧@30fps ≈ 0.8s）+ 少量缓冲 */
+const FEED_COOLDOWN_MS = 4000
 
 export interface XiaoguaiStateView {
   animation: XiaoguaiAnimation

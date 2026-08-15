@@ -146,6 +146,7 @@ function XiaoguaiFloat(): ReactElement {
   const animation: Animation = state.local ?? snapshot?.animation ?? 'idle'
 
   const spriteRef = useRef<HTMLDivElement | null>(null)
+  const floatRef = useRef<HTMLDivElement | null>(null)
   const [dragPos, setDragPos] = useState<{ right: number; bottom: number } | null>(null)
   const dragRef = useRef<{ startX: number; startY: number; right: number; bottom: number } | null>(null)
   const draggedRef = useRef(false)
@@ -167,7 +168,17 @@ function XiaoguaiFloat(): ReactElement {
     anim: null, index: 0, elapsed: 0, finished: false,
   })
   const animRef = useRef(animation)
+  const prevAnimRef = useRef<Animation | null>(null)
   animRef.current = animation
+
+  // 动画切换瞬间（React 重建了 style）同步补写首帧位置，消除一帧空白/旧帧闪现
+  useEffect(() => {
+    if (prevAnimRef.current !== animation && spriteRef.current !== null) {
+      prevAnimRef.current = animation
+      frameRef.current = { anim: null, index: 0, elapsed: 0, finished: false }
+      spriteRef.current.style.backgroundPosition = '0px 0'
+    }
+  }, [animation])
 
   // 帧循环：rAF + meta 驱动（30fps 原速）；暂时态播完一轮停在末帧并回落
   useEffect(() => {
@@ -225,6 +236,7 @@ function XiaoguaiFloat(): ReactElement {
   const size = display.size
 
   const float = createElement('div', {
+    ref: floatRef,
     style: {
       position: 'fixed', right: pos.right, bottom: pos.bottom, zIndex: 2147483000,
       display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -242,7 +254,9 @@ function XiaoguaiFloat(): ReactElement {
         backgroundImage: `url(/xiaoguai/assets/${animation}_spritesheet.png)`,
         backgroundSize: `${size * (metas.get(animation)?.frameCount ?? 1)}px ${size}px`,
         backgroundRepeat: 'no-repeat',
-        backgroundPosition: '0 0',
+        // 注意：backgroundPosition 不写在 React style 里——
+        // 帧位置完全由 rAF 循环直写 DOM；React 重渲染（如拖拽更新 pos）会重置
+        // 内联 style 导致闪回第 0 帧/旧位置，出现"两个小乖"残影（bug#2 根因）
         imageRendering: 'auto',
         touchAction: 'none',
         cursor: dragRef.current === null ? 'grab' : 'grabbing',
@@ -268,14 +282,21 @@ function XiaoguaiFloat(): ReactElement {
         }
         const right = Math.max(0, Math.min(drag.right - dx, window.innerWidth - 40))
         const bottom = Math.max(0, Math.min(drag.bottom - dy, window.innerHeight - 40))
-        setDragPos({ right, bottom })
+        dragRef.current = { ...drag, right, bottom }
+        // 拖拽期间直写 DOM 不走 React state（不触发重渲染，消除双影/残影）
+        if (floatRef.current !== null) {
+          floatRef.current.style.right = `${right}px`
+          floatRef.current.style.bottom = `${bottom}px`
+        }
       },
       onPointerUp: () => {
         if (dragRef.current === null) return
         const wasDrag = draggedRef.current
+        const finalPos = { right: dragRef.current.right, bottom: dragRef.current.bottom }
         clearDrag()
-        if (wasDrag && dragPos !== null) {
-          void API.interact('dragEnd', dragPos)
+        if (wasDrag) {
+          setDragPos(finalPos)           // 拖拽结束才让 React 接管位置（一次提交）
+          void API.interact('dragEnd', finalPos)
         } else if (!wasDrag) {
           // 单击 = 摸头（只播一次）
           void API.interact('pat').then(r => { if (r.bubble) setUi({ bubble: r.bubble, bubbleAt: Date.now() }) })

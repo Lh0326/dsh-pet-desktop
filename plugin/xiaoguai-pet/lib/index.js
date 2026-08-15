@@ -163,7 +163,7 @@ function rankOf(points) {
   return { name: r.name, emoji: r.emoji };
 }
 var PAT_COOLDOWN_MS = 3e3;
-var FEED_COOLDOWN_MS = 1e4;
+var FEED_COOLDOWN_MS = 4e3;
 var XiaoguaiService = class extends Service {
   static inject = [];
   phase = "idle";
