@@ -158,21 +158,27 @@ function XiaoguaiFloat(): ReactElement {
 
   const spriteRef = useRef<HTMLDivElement | null>(null)
   const floatRef = useRef<HTMLDivElement | null>(null)
-  /** 位置真相只在 ref（命令式世界）：React 渲染永远不带 right/bottom，
-   *  重渲染不会覆写位置 → 根治轮询/动画切换时的位置跳变（分身根因） */
+  /** 位置唯一真相（命令式世界）。三个写入源，优先级从高到低：
+   *  1) 拖拽 pointermove（实时）
+   *  2) 本窗口内已确认的位置（拖拽结束提交 / 本窗口曾用 host 持久化位置初始化）
+   *  3) host 快照的持久化位置——只在"本窗口从未有过位置"时采用一次
+   *     （否则轮询每 800ms 都会用 host 旧值覆写本地新值 → 挪完弹回/挪飞） */
   const posRef = useRef<{ right: number; bottom: number } | null>(null)
   const dragRef = useRef<{ startX: number; startY: number; right: number; bottom: number } | null>(null)
   const draggedRef = useRef(false)
   const [hovered, setHovered] = useState(false)
   const hidePanelTimer = useRef<number | null>(null)
 
-  // 位置同步 effect：posRef 变化（含 host 快照里的持久化位置）→ 直写 DOM。
-  // 只在"非拖拽中"执行，拖拽由 pointermove 直写。
+  // 位置同步 effect：DOM 挂载后 + host 持久化位置到达时写一次。
+  // 关键约束：posRef 已有值就不采用 host 值（本地拖拽产生的位置优先）。
   useEffect(() => {
-    const target = posRef.current ?? { right: display.right, bottom: display.bottom }
+    if (posRef.current === null) {
+      posRef.current = { right: display.right, bottom: display.bottom }
+    }
     if (floatRef.current !== null && dragRef.current === null) {
-      floatRef.current.style.right = `${target.right}px`
-      floatRef.current.style.bottom = `${target.bottom}px`
+      const p = posRef.current
+      floatRef.current.style.right = `${p.right}px`
+      floatRef.current.style.bottom = `${p.bottom}px`
     }
   })
 
@@ -293,11 +299,9 @@ function XiaoguaiFloat(): ReactElement {
         ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
         setHovered(false)   // 按下即收面板：摸头气泡不被面板遮挡（用户反馈#3）
         preloadSpritesheet('pet-drag')
-        const rect = floatRef.current?.getBoundingClientRect()
-        const current = rect !== undefined
-          ? { right: window.innerWidth - rect.right, bottom: window.innerHeight - rect.bottom }
-          : (posRef.current ?? { right: display.right, bottom: display.bottom })
-        posRef.current = current
+        // 锚点 = posRef（本窗口唯一真相）。绝不用 rect 反推——effect 刚写完 DOM
+        // 又去 getBoundingClientRect，在拖拽首帧与 clamp 计算竞争会把锚点放大偏移（挪飞根因）。
+        const current = posRef.current ?? { right: display.right, bottom: display.bottom }
         dragRef.current = { startX: e.clientX, startY: e.clientY, ...current }
         draggedRef.current = false
       },

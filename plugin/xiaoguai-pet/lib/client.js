@@ -147,10 +147,13 @@ function XiaoguaiFloat() {
   const [hovered, setHovered] = (0, import_react.useState)(false);
   const hidePanelTimer = (0, import_react.useRef)(null);
   (0, import_react.useEffect)(() => {
-    const target = posRef.current ?? { right: display.right, bottom: display.bottom };
+    if (posRef.current === null) {
+      posRef.current = { right: display.right, bottom: display.bottom };
+    }
     if (floatRef.current !== null && dragRef.current === null) {
-      floatRef.current.style.right = `${target.right}px`;
-      floatRef.current.style.bottom = `${target.bottom}px`;
+      const p = posRef.current;
+      floatRef.current.style.right = `${p.right}px`;
+      floatRef.current.style.bottom = `${p.bottom}px`;
     }
   });
   const showPanel = () => {
@@ -274,9 +277,7 @@ function XiaoguaiFloat() {
         e.target.setPointerCapture?.(e.pointerId);
         setHovered(false);
         preloadSpritesheet("pet-drag");
-        const rect = floatRef.current?.getBoundingClientRect();
-        const current = rect !== void 0 ? { right: window.innerWidth - rect.right, bottom: window.innerHeight - rect.bottom } : posRef.current ?? { right: display.right, bottom: display.bottom };
-        posRef.current = current;
+        const current = posRef.current ?? { right: display.right, bottom: display.bottom };
         dragRef.current = { startX: e.clientX, startY: e.clientY, ...current };
         draggedRef.current = false;
       },
