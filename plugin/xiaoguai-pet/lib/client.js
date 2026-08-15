@@ -93,11 +93,36 @@ function XiaoguaiEntry() {
   const visible = state.snapshot?.display.visible ?? true;
   if (!visible) {
     return (0, import_react.createElement)("button", {
+      type: "button",
+      "aria-label": "\u53EC\u56DE\u5C0F\u4E56",
       onClick: () => {
         void API.interact("summon").then(() => setUi({ snapshot: ui.snapshot ? { ...ui.snapshot, display: { ...ui.snapshot.display, visible: true } } : null }));
       },
-      style: { position: "fixed", right: 24, bottom: 24, zIndex: 2147483e3 }
-    }, "\u547C\u5524\u5C0F\u4E56");
+      style: {
+        position: "fixed",
+        right: 8,
+        bottom: 8,
+        zIndex: 2147483e3,
+        width: 30,
+        height: 30,
+        borderRadius: "50%",
+        border: "1px solid rgba(148,163,184,0.5)",
+        background: "rgba(15,23,42,0.55)",
+        color: "#cbd5e1",
+        fontSize: 15,
+        lineHeight: 1,
+        cursor: "pointer",
+        padding: 0,
+        opacity: 0.35,
+        transition: "opacity .15s"
+      },
+      onPointerEnter: (e) => {
+        e.currentTarget.style.opacity = "1";
+      },
+      onPointerLeave: (e) => {
+        e.currentTarget.style.opacity = "0.35";
+      }
+    }, "\u4E56");
   }
   return (0, import_react.createElement)(XiaoguaiFloat);
 }
@@ -111,6 +136,18 @@ function XiaoguaiFloat() {
   const dragRef = (0, import_react.useRef)(null);
   const draggedRef = (0, import_react.useRef)(false);
   const [hovered, setHovered] = (0, import_react.useState)(false);
+  const hidePanelTimer = (0, import_react.useRef)(null);
+  const showPanel = () => {
+    if (hidePanelTimer.current !== null) {
+      window.clearTimeout(hidePanelTimer.current);
+      hidePanelTimer.current = null;
+    }
+    setHovered(true);
+  };
+  const scheduleHidePanel = () => {
+    if (hidePanelTimer.current !== null) window.clearTimeout(hidePanelTimer.current);
+    hidePanelTimer.current = window.setTimeout(() => setHovered(false), 400);
+  };
   const frameRef = (0, import_react.useRef)({
     anim: null,
     index: 0,
@@ -186,10 +223,8 @@ function XiaoguaiFloat() {
         userSelect: "none",
         WebkitUserSelect: "none"
       },
-      onPointerEnter: () => setHovered(true),
-      onPointerLeave: () => {
-        setHovered(false);
-      }
+      onPointerEnter: showPanel,
+      onPointerLeave: scheduleHidePanel
     },
     (0, import_react.createElement)("div", {
       ref: spriteRef,
@@ -209,6 +244,7 @@ function XiaoguaiFloat() {
       onPointerDown: (e) => {
         e.preventDefault();
         e.target.setPointerCapture?.(e.pointerId);
+        setHovered(false);
         const current = dragPos ?? { right: display.right, bottom: display.bottom };
         dragRef.current = { startX: e.clientX, startY: e.clientY, ...current };
         draggedRef.current = false;
@@ -247,7 +283,7 @@ function XiaoguaiFloat() {
       style: {
         position: "absolute",
         bottom: "100%",
-        marginBottom: 6,
+        marginBottom: 2,
         whiteSpace: "nowrap",
         padding: "4px 10px",
         borderRadius: 999,
@@ -261,10 +297,13 @@ function XiaoguaiFloat() {
     hovered && dragRef.current === null && (0, import_react.createElement)(
       "div",
       {
+        onPointerEnter: showPanel,
+        onPointerLeave: scheduleHidePanel,
         style: {
+          // 贴着小乖头顶零间隙（+400ms 缓冲），鼠标移向面板全程在 hit 区
           position: "absolute",
           bottom: "100%",
-          marginBottom: 6,
+          marginBottom: 0,
           background: "rgba(15,23,42,0.92)",
           border: "1px solid rgba(148,163,184,0.35)",
           borderRadius: 10,
@@ -272,27 +311,47 @@ function XiaoguaiFloat() {
           color: "#e2e8f0",
           fontSize: 12,
           display: "flex",
-          gap: 6
+          flexDirection: "column",
+          gap: 6,
+          minWidth: 128
         }
       },
-      (0, import_react.createElement)("button", {
-        type: "button",
-        onClick: () => {
-          void API.interact("feed").then((r) => {
-            if (r.bubble) setUi({ bubble: r.bubble, bubbleAt: Date.now() });
-          });
-          setUi({ local: "pet-feed" });
-        },
-        style: { cursor: "pointer" }
-      }, "\u6295\u5582"),
-      (0, import_react.createElement)("button", {
-        type: "button",
-        onClick: () => {
-          void API.interact("hide");
-          setUi({ snapshot: ui.snapshot ? { ...ui.snapshot, display: { ...ui.snapshot.display, visible: false } } : null });
-        },
-        style: { cursor: "pointer" }
-      }, "\u9690\u85CF")
+      (0, import_react.createElement)(
+        "div",
+        { style: { display: "flex", justifyContent: "space-between", gap: 8 } },
+        (0, import_react.createElement)("span", null, `${snapshot?.affinity.rankEmoji ?? "\u{1F331}"} \u5C0F\u4E56 \xB7 ${snapshot?.affinity.rank ?? "\u521D\u8BC6"}`),
+        (0, import_react.createElement)("span", { style: { opacity: 0.7 } }, `${snapshot?.affinity.points ?? 0} \u5206`)
+      ),
+      (0, import_react.createElement)(
+        "div",
+        { style: { display: "flex", justifyContent: "space-between", gap: 8, opacity: 0.75 } },
+        (0, import_react.createElement)("span", null, `\u6478\u5934 ${snapshot?.affinity.pets ?? 0}`),
+        (0, import_react.createElement)("span", null, `\u6295\u5582 ${snapshot?.affinity.feeds ?? 0}`),
+        (0, import_react.createElement)("span", null, `\u966A\u5DE5 ${snapshot?.affinity.turns ?? 0}`)
+      ),
+      (0, import_react.createElement)(
+        "div",
+        { style: { display: "flex", gap: 6 } },
+        (0, import_react.createElement)("button", {
+          type: "button",
+          disabled: snapshot?.affinity.feedCooldown === true,
+          onClick: () => {
+            void API.interact("feed").then((r) => {
+              if (r.bubble) setUi({ bubble: r.bubble, bubbleAt: Date.now() });
+            });
+            setUi({ local: "pet-feed" });
+          },
+          style: { cursor: "pointer", flex: 1 }
+        }, snapshot?.affinity.feedCooldown === true ? "\u56BC\u7740\u5462\u2026" : "\u6295\u5582"),
+        (0, import_react.createElement)("button", {
+          type: "button",
+          onClick: () => {
+            void API.interact("hide");
+            setUi({ snapshot: ui.snapshot ? { ...ui.snapshot, display: { ...ui.snapshot.display, visible: false } } : null });
+          },
+          style: { cursor: "pointer", flex: 1 }
+        }, "\u9690\u85CF")
+      )
     )
   );
   return (0, import_react_dom.createPortal)(float, document.body);

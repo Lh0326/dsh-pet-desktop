@@ -151,12 +151,28 @@ function animationForPhase(phase) {
       return "idle";
   }
 }
+var RANKS = [
+  { threshold: 0, name: "\u521D\u8BC6", emoji: "\u{1F331}" },
+  { threshold: 20, name: "\u719F\u6089", emoji: "\u{1F340}" },
+  { threshold: 60, name: "\u4F19\u4F34", emoji: "\u2728" },
+  { threshold: 150, name: "\u631A\u53CB", emoji: "\u{1F496}" }
+];
+function rankOf(points) {
+  let r = RANKS[0];
+  for (const cand of RANKS) if (points >= cand.threshold) r = cand;
+  return { name: r.name, emoji: r.emoji };
+}
+var PAT_COOLDOWN_MS = 3e3;
+var FEED_COOLDOWN_MS = 1e4;
 var XiaoguaiService = class extends Service {
   static inject = [];
   phase = "idle";
   sessionActive = false;
   celebrateUntil = 0;
   display = { size: 176, right: 24, bottom: 24, visible: true };
+  affinity = { points: 0, pets: 0, feeds: 0, turns: 0 };
+  lastPatAt = 0;
+  lastFeedAt = 0;
   persistPath;
   constructor(ctx) {
     super(ctx, "xiaoguai");
@@ -165,6 +181,7 @@ var XiaoguaiService = class extends Service {
     try {
       const loaded = JSON.parse(readFileSync(this.persistPath, "utf8"));
       if (loaded.display) this.display = { ...this.display, ...loaded.display };
+      if (loaded.affinity) this.affinity = { ...this.affinity, ...loaded.affinity };
     } catch {
     }
     ctx.on("session/event", (_s, event) => {
@@ -185,6 +202,9 @@ var XiaoguaiService = class extends Service {
           if (event.data.reason.kind === "completed") {
             this.phase = "done";
             this.celebrateUntil = Date.now() + 4e3;
+            this.affinity.turns += 1;
+            this.affinity.points += 2;
+            this.save();
           } else {
             this.phase = "idle";
           }
@@ -204,9 +224,23 @@ var XiaoguaiService = class extends Service {
   save() {
     try {
       mkdirSync(dirname(this.persistPath), { recursive: true });
-      writeFileSync(this.persistPath, JSON.stringify({ display: this.display }, null, 2));
+      writeFileSync(this.persistPath, JSON.stringify({ display: this.display, affinity: this.affinity }, null, 2));
     } catch {
     }
+  }
+  affinityView() {
+    const { name: name2, emoji } = rankOf(this.affinity.points);
+    const now = Date.now();
+    return {
+      points: this.affinity.points,
+      rank: name2,
+      rankEmoji: emoji,
+      pets: this.affinity.pets,
+      feeds: this.affinity.feeds,
+      turns: this.affinity.turns,
+      patCooldown: now - this.lastPatAt < PAT_COOLDOWN_MS,
+      feedCooldown: now - this.lastFeedAt < FEED_COOLDOWN_MS
+    };
   }
   /** RPC: 状态快照 */
   state() {
@@ -215,16 +249,41 @@ var XiaoguaiService = class extends Service {
       animation: animationForPhase(this.phase),
       phase: this.phase,
       sessionActive: this.sessionActive,
-      display: { ...this.display }
+      display: { ...this.display },
+      affinity: this.affinityView()
     };
   }
-  /** RPC: 互动 */
+  /** RPC: 互动（含好感度结算，参考鲸鱼娘） */
   interact(kind, payload) {
+    const now = Date.now();
     switch (kind) {
-      case "pat":
-        return { animation: "pet-pat", bubble: "\u5C0F\u4E56\u8212\u670D\u5730\u772F\u8D77\u4E86\u773C~" };
-      case "feed":
-        return { animation: "pet-feed", bubble: "\u5C0F\u4E56\u5403\u5F97\u816E\u5E2E\u9F13\u9F13\u7684\uFF01" };
+      case "pat": {
+        const onCooldown = now - this.lastPatAt < PAT_COOLDOWN_MS;
+        if (!onCooldown) {
+          this.lastPatAt = now;
+          this.affinity.pets += 1;
+          this.affinity.points += 1;
+          this.save();
+        }
+        const replies = ["\u5C0F\u4E56\u8212\u670D\u5730\u772F\u8D77\u4E86\u773C~", "\u518D\u6478\u6478\u5934\u4E5F\u5F88\u5F00\u5FC3\uFF01", "\u5C0F\u4E56\u7684\u5934\u53D1\u88AB\u6478\u4E71\u4E86\u5566~"];
+        return {
+          animation: "pet-pat",
+          bubble: onCooldown ? "\u5C0F\u4E56\u6709\u70B9\u88AB\u6478\u6655\u4E86\u2026" : replies[this.affinity.pets % replies.length],
+          delta: onCooldown ? 0 : 1,
+          affinity: this.affinityView()
+        };
+      }
+      case "feed": {
+        const onCooldown = now - this.lastFeedAt < FEED_COOLDOWN_MS;
+        if (onCooldown) {
+          return { animation: "pet-feed", bubble: "\u5C0F\u4E56\u8FD8\u56BC\u7740\u5462\uFF0C\u7B49\u7B49\u518D\u5582~", delta: 0, affinity: this.affinityView() };
+        }
+        this.lastFeedAt = now;
+        this.affinity.feeds += 1;
+        this.affinity.points += 3;
+        this.save();
+        return { animation: "pet-feed", bubble: "\u5C0F\u4E56\u5403\u5F97\u816E\u5E2E\u9F13\u9F13\u7684\uFF01+3 \u597D\u611F", delta: 3, affinity: this.affinityView() };
+      }
       case "dragEnd":
         if (payload?.right !== void 0 && payload?.bottom !== void 0) {
           this.display.right = Math.max(0, Math.round(payload.right));

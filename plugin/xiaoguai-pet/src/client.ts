@@ -22,6 +22,16 @@ interface StateView {
   sessionActive: boolean
   bubble?: string
   display: { size: number; right: number; bottom: number; visible: boolean }
+  affinity: {
+    points: number
+    rank: string
+    rankEmoji: string
+    pets: number
+    feeds: number
+    turns: number
+    patCooldown: boolean
+    feedCooldown: boolean
+  }
 }
 
 const API = {
@@ -104,10 +114,25 @@ function XiaoguaiEntry(): ReactElement {
   const state = useSyncExternalStore(subscribe, () => ui)
   const visible = state.snapshot?.display.visible ?? true
   if (!visible) {
+    // 召回按钮：贴边低调小圆钮（参考鲸鱼娘的召唤入口，不遮挡内容）
     return createElement('button', {
-      onClick: () => { void API.interact('summon').then(() => setUi({ snapshot: ui.snapshot ? { ...ui.snapshot, display: { ...ui.snapshot.display, visible: true } } : null })) },
-      style: { position: 'fixed', right: 24, bottom: 24, zIndex: 2147483000 } as React.CSSProperties,
-    }, '呼唤小乖')
+      type: 'button',
+      'aria-label': '召回小乖',
+      onClick: () => {
+        void API.interact('summon').then(() => setUi({ snapshot: ui.snapshot ? { ...ui.snapshot, display: { ...ui.snapshot.display, visible: true } } : null }))
+      },
+      style: {
+        position: 'fixed', right: 8, bottom: 8, zIndex: 2147483000,
+        width: 30, height: 30, borderRadius: '50%',
+        border: '1px solid rgba(148,163,184,0.5)',
+        background: 'rgba(15,23,42,0.55)',
+        color: '#cbd5e1', fontSize: 15, lineHeight: 1,
+        cursor: 'pointer', padding: 0, opacity: 0.35,
+        transition: 'opacity .15s',
+      } as React.CSSProperties,
+      onPointerEnter: (e: React.PointerEvent<HTMLButtonElement>) => { e.currentTarget.style.opacity = '1' },
+      onPointerLeave: (e: React.PointerEvent<HTMLButtonElement>) => { e.currentTarget.style.opacity = '0.35' },
+    }, '乖')
   }
   return createElement(XiaoguaiFloat)
 }
@@ -125,6 +150,19 @@ function XiaoguaiFloat(): ReactElement {
   const dragRef = useRef<{ startX: number; startY: number; right: number; bottom: number } | null>(null)
   const draggedRef = useRef(false)
   const [hovered, setHovered] = useState(false)
+  const hidePanelTimer = useRef<number | null>(null)
+
+  /** 悬停面板显示策略（修复点击死角）：
+   *  面板贴着小乖头顶（无间隙）+ pointerleave 延迟 400ms 收起，
+   *  鼠标从人物移到面板的路径全程都在 hit 区内 */
+  const showPanel = (): void => {
+    if (hidePanelTimer.current !== null) { window.clearTimeout(hidePanelTimer.current); hidePanelTimer.current = null }
+    setHovered(true)
+  }
+  const scheduleHidePanel = (): void => {
+    if (hidePanelTimer.current !== null) window.clearTimeout(hidePanelTimer.current)
+    hidePanelTimer.current = window.setTimeout(() => setHovered(false), 400)
+  }
   const frameRef = useRef<{ anim: Animation | null; index: number; elapsed: number; finished: boolean }>({
     anim: null, index: 0, elapsed: 0, finished: false,
   })
@@ -192,8 +230,8 @@ function XiaoguaiFloat(): ReactElement {
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       userSelect: 'none', WebkitUserSelect: 'none',
     } as React.CSSProperties,
-    onPointerEnter: () => setHovered(true),
-    onPointerLeave: () => { setHovered(false) },
+    onPointerEnter: showPanel,
+    onPointerLeave: scheduleHidePanel,
   },
     createElement('div', {
       ref: spriteRef,
@@ -212,6 +250,7 @@ function XiaoguaiFloat(): ReactElement {
       onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
         e.preventDefault()
         ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+        setHovered(false)   // 按下即收面板：摸头气泡不被面板遮挡（用户反馈#3）
         const current = dragPos ?? { right: display.right, bottom: display.bottom }
         dragRef.current = { startX: e.clientX, startY: e.clientY, ...current }
         draggedRef.current = false
@@ -247,36 +286,51 @@ function XiaoguaiFloat(): ReactElement {
     state.bubble !== null && createElement('div', {
       key: state.bubbleAt,
       style: {
-        position: 'absolute', bottom: '100%', marginBottom: 6,
+        position: 'absolute', bottom: '100%', marginBottom: 2,
         whiteSpace: 'nowrap', padding: '4px 10px', borderRadius: 999,
         fontSize: 12, color: '#fff', background: 'rgba(244,114,182,0.92)',
         boxShadow: '0 2px 8px rgba(0,0,0,0.25)', pointerEvents: 'none',
       } as React.CSSProperties,
     }, state.bubble),
     hovered && dragRef.current === null && createElement('div', {
+      onPointerEnter: showPanel,
+      onPointerLeave: scheduleHidePanel,
       style: {
-        position: 'absolute', bottom: '100%', marginBottom: 6,
+        // 贴着小乖头顶零间隙（+400ms 缓冲），鼠标移向面板全程在 hit 区
+        position: 'absolute', bottom: '100%', marginBottom: 0,
         background: 'rgba(15,23,42,0.92)', border: '1px solid rgba(148,163,184,0.35)',
         borderRadius: 10, padding: '8px 10px', color: '#e2e8f0', fontSize: 12,
-        display: 'flex', gap: 6,
+        display: 'flex', flexDirection: 'column', gap: 6, minWidth: 128,
       } as React.CSSProperties,
     },
-      createElement('button', {
-        type: 'button',
-        onClick: () => {
-          void API.interact('feed').then(r => { if (r.bubble) setUi({ bubble: r.bubble, bubbleAt: Date.now() }) })
-          setUi({ local: 'pet-feed' })
-        },
-        style: { cursor: 'pointer' },
-      }, '投喂'),
-      createElement('button', {
-        type: 'button',
-        onClick: () => {
-          void API.interact('hide')
-          setUi({ snapshot: ui.snapshot ? { ...ui.snapshot, display: { ...ui.snapshot.display, visible: false } } : null })
-        },
-        style: { cursor: 'pointer' },
-      }, '隐藏'),
+      createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8 } as React.CSSProperties },
+        createElement('span', null, `${snapshot?.affinity.rankEmoji ?? '🌱'} 小乖 · ${snapshot?.affinity.rank ?? '初识'}`),
+        createElement('span', { style: { opacity: 0.7 } as React.CSSProperties }, `${snapshot?.affinity.points ?? 0} 分`),
+      ),
+      createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8, opacity: 0.75 } as React.CSSProperties },
+        createElement('span', null, `摸头 ${snapshot?.affinity.pets ?? 0}`),
+        createElement('span', null, `投喂 ${snapshot?.affinity.feeds ?? 0}`),
+        createElement('span', null, `陪工 ${snapshot?.affinity.turns ?? 0}`),
+      ),
+      createElement('div', { style: { display: 'flex', gap: 6 } as React.CSSProperties },
+        createElement('button', {
+          type: 'button',
+          disabled: snapshot?.affinity.feedCooldown === true,
+          onClick: () => {
+            void API.interact('feed').then(r => { if (r.bubble) setUi({ bubble: r.bubble, bubbleAt: Date.now() }) })
+            setUi({ local: 'pet-feed' })
+          },
+          style: { cursor: 'pointer', flex: 1 } as React.CSSProperties,
+        }, snapshot?.affinity.feedCooldown === true ? '嚼着呢…' : '投喂'),
+        createElement('button', {
+          type: 'button',
+          onClick: () => {
+            void API.interact('hide')
+            setUi({ snapshot: ui.snapshot ? { ...ui.snapshot, display: { ...ui.snapshot.display, visible: false } } : null })
+          },
+          style: { cursor: 'pointer', flex: 1 } as React.CSSProperties,
+        }, '隐藏'),
+      ),
     ),
   )
   return createPortal(float, document.body)

@@ -32,15 +32,47 @@ export function animationForPhase(phase: ActivityPhase): XiaoguaiAnimation {
 
 export interface XiaoguaiDisplay { size: number; right: number; bottom: number; visible: boolean }
 
+/** 好感度体系（参考鲸鱼娘：点数+等级+统计） */
+export interface XiaoguaiAffinity {
+  points: number
+  rank: string
+  rankEmoji: string
+  pets: number
+  feeds: number
+  turns: number
+  patCooldown: boolean
+  feedCooldown: boolean
+}
+
+const RANKS: { threshold: number; name: string; emoji: string }[] = [
+  { threshold: 0, name: '初识', emoji: '🌱' },
+  { threshold: 20, name: '熟悉', emoji: '🍀' },
+  { threshold: 60, name: '伙伴', emoji: '✨' },
+  { threshold: 150, name: '挚友', emoji: '💖' },
+]
+
+function rankOf(points: number): { name: string; emoji: string } {
+  let r = RANKS[0]
+  for (const cand of RANKS) if (points >= cand.threshold) r = cand
+  return { name: r.name, emoji: r.emoji }
+}
+
+const PAT_COOLDOWN_MS = 3000
+const FEED_COOLDOWN_MS = 10000
+
 export interface XiaoguaiStateView {
   animation: XiaoguaiAnimation
   phase: ActivityPhase
   sessionActive: boolean
   bubble?: string
   display: XiaoguaiDisplay
+  affinity: XiaoguaiAffinity
 }
 
-interface PersistShape { display: XiaoguaiDisplay }
+interface PersistShape {
+  display: XiaoguaiDisplay
+  affinity?: { points: number; pets: number; feeds: number; turns: number }
+}
 
 /** 小乖服务 */
 export class XiaoguaiService extends Service {
@@ -50,6 +82,9 @@ export class XiaoguaiService extends Service {
   private sessionActive = false
   private celebrateUntil = 0
   private display: XiaoguaiDisplay = { size: 176, right: 24, bottom: 24, visible: true }
+  private affinity = { points: 0, pets: 0, feeds: 0, turns: 0 }
+  private lastPatAt = 0
+  private lastFeedAt = 0
   private readonly persistPath: string
 
   constructor(ctx: Context) {
@@ -61,6 +96,7 @@ export class XiaoguaiService extends Service {
     try {
       const loaded = JSON.parse(readFileSync(this.persistPath, 'utf8')) as PersistShape
       if (loaded.display) this.display = { ...this.display, ...loaded.display }
+      if (loaded.affinity) this.affinity = { ...this.affinity, ...loaded.affinity }
     } catch { /* 首次运行无持久化文件 */ }
 
     ctx.on('session/event', (_s: Session, event: SessionEvent) => {
@@ -81,6 +117,9 @@ export class XiaoguaiService extends Service {
           if (event.data.reason.kind === 'completed') {
             this.phase = 'done'
             this.celebrateUntil = Date.now() + 4000
+            this.affinity.turns += 1
+            this.affinity.points += 2   // 陪小乖干完一轮活的奖励
+            this.save()
           } else {
             this.phase = 'idle'
           }
@@ -102,8 +141,23 @@ export class XiaoguaiService extends Service {
   private save(): void {
     try {
       mkdirSync(dirname(this.persistPath), { recursive: true })
-      writeFileSync(this.persistPath, JSON.stringify({ display: this.display }, null, 2))
+      writeFileSync(this.persistPath, JSON.stringify({ display: this.display, affinity: this.affinity }, null, 2))
     } catch { /* 持久化失败不致命 */ }
+  }
+
+  private affinityView(): XiaoguaiAffinity {
+    const { name, emoji } = rankOf(this.affinity.points)
+    const now = Date.now()
+    return {
+      points: this.affinity.points,
+      rank: name,
+      rankEmoji: emoji,
+      pets: this.affinity.pets,
+      feeds: this.affinity.feeds,
+      turns: this.affinity.turns,
+      patCooldown: now - this.lastPatAt < PAT_COOLDOWN_MS,
+      feedCooldown: now - this.lastFeedAt < FEED_COOLDOWN_MS,
+    }
   }
 
   /** RPC: 状态快照 */
@@ -114,16 +168,41 @@ export class XiaoguaiService extends Service {
       phase: this.phase,
       sessionActive: this.sessionActive,
       display: { ...this.display },
+      affinity: this.affinityView(),
     }
   }
 
-  /** RPC: 互动 */
-  interact(kind: 'pat' | 'feed' | 'dragEnd' | 'hide' | 'summon', payload?: { right?: number; bottom?: number }): { animation: XiaoguaiAnimation; bubble?: string } {
+  /** RPC: 互动（含好感度结算，参考鲸鱼娘） */
+  interact(kind: 'pat' | 'feed' | 'dragEnd' | 'hide' | 'summon', payload?: { right?: number; bottom?: number }): { animation: XiaoguaiAnimation; bubble?: string; delta?: number; affinity?: XiaoguaiAffinity } {
+    const now = Date.now()
     switch (kind) {
-      case 'pat':
-        return { animation: 'pet-pat', bubble: '小乖舒服地眯起了眼~' }
-      case 'feed':
-        return { animation: 'pet-feed', bubble: '小乖吃得腮帮鼓鼓的！' }
+      case 'pat': {
+        const onCooldown = now - this.lastPatAt < PAT_COOLDOWN_MS
+        if (!onCooldown) {
+          this.lastPatAt = now
+          this.affinity.pets += 1
+          this.affinity.points += 1
+          this.save()
+        }
+        const replies = ['小乖舒服地眯起了眼~', '再摸摸头也很开心！', '小乖的头发被摸乱了啦~']
+        return {
+          animation: 'pet-pat',
+          bubble: onCooldown ? '小乖有点被摸晕了…' : replies[this.affinity.pets % replies.length],
+          delta: onCooldown ? 0 : 1,
+          affinity: this.affinityView(),
+        }
+      }
+      case 'feed': {
+        const onCooldown = now - this.lastFeedAt < FEED_COOLDOWN_MS
+        if (onCooldown) {
+          return { animation: 'pet-feed', bubble: '小乖还嚼着呢，等等再喂~', delta: 0, affinity: this.affinityView() }
+        }
+        this.lastFeedAt = now
+        this.affinity.feeds += 1
+        this.affinity.points += 3
+        this.save()
+        return { animation: 'pet-feed', bubble: '小乖吃得腮帮鼓鼓的！+3 好感', delta: 3, affinity: this.affinityView() }
+      }
       case 'dragEnd':
         if (payload?.right !== undefined && payload?.bottom !== undefined) {
           this.display.right = Math.max(0, Math.round(payload.right))
