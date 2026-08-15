@@ -158,29 +158,14 @@ function XiaoguaiFloat(): ReactElement {
 
   const spriteRef = useRef<HTMLDivElement | null>(null)
   const floatRef = useRef<HTMLDivElement | null>(null)
-  /** 位置唯一真相（命令式世界）。三个写入源，优先级从高到低：
-   *  1) 拖拽 pointermove（实时）
-   *  2) 本窗口内已确认的位置（拖拽结束提交 / 本窗口曾用 host 持久化位置初始化）
-   *  3) host 快照的持久化位置——只在"本窗口从未有过位置"时采用一次
-   *     （否则轮询每 800ms 都会用 host 旧值覆写本地新值 → 挪完弹回/挪飞） */
-  const posRef = useRef<{ right: number; bottom: number } | null>(null)
+  /** 拖拽位置：React state 驱动（与鲸鱼娘 WhalePet 同构）。
+   *  位置真相只有这一份 state + host 持久化值，style 带出；
+   *  分身残影的真正来源是双挂载与精灵图首载空白，已在 apply()/预加载处修复。 */
+  const [dragPos, setDragPos] = useState<{ right: number; bottom: number } | null>(null)
   const dragRef = useRef<{ startX: number; startY: number; right: number; bottom: number } | null>(null)
   const draggedRef = useRef(false)
   const [hovered, setHovered] = useState(false)
   const hidePanelTimer = useRef<number | null>(null)
-
-  // 位置同步 effect：DOM 挂载后 + host 持久化位置到达时写一次。
-  // 关键约束：posRef 已有值就不采用 host 值（本地拖拽产生的位置优先）。
-  useEffect(() => {
-    if (posRef.current === null) {
-      posRef.current = { right: display.right, bottom: display.bottom }
-    }
-    if (floatRef.current !== null && dragRef.current === null) {
-      const p = posRef.current
-      floatRef.current.style.right = `${p.right}px`
-      floatRef.current.style.bottom = `${p.bottom}px`
-    }
-  })
 
   /** 悬停面板显示策略（修复点击死角）：
    *  面板贴着小乖头顶（无间隙）+ pointerleave 延迟 400ms 收起，
@@ -266,14 +251,12 @@ function XiaoguaiFloat(): ReactElement {
   }
 
   const size = display.size
+  const pos = dragPos ?? { right: display.right, bottom: display.bottom }
 
   const float = createElement('div', {
     ref: floatRef,
     style: {
-      // right/bottom 不在此！位置 100% 由 posRef effect + pointermove 直写。
-      // React style diff 一旦拥有过的属性，任何重渲染都可能用旧值覆写命令式写入，
-      // 这是分身残影的根本来源。位置属性从头到尾不给 React。
-      position: 'fixed', zIndex: 2147483000,
+      position: 'fixed', right: pos.right, bottom: pos.bottom, zIndex: 2147483000,
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       userSelect: 'none', WebkitUserSelect: 'none',
     } as React.CSSProperties,
@@ -299,9 +282,7 @@ function XiaoguaiFloat(): ReactElement {
         ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
         setHovered(false)   // 按下即收面板：摸头气泡不被面板遮挡（用户反馈#3）
         preloadSpritesheet('pet-drag')
-        // 锚点 = posRef（本窗口唯一真相）。绝不用 rect 反推——effect 刚写完 DOM
-        // 又去 getBoundingClientRect，在拖拽首帧与 clamp 计算竞争会把锚点放大偏移（挪飞根因）。
-        const current = posRef.current ?? { right: display.right, bottom: display.bottom }
+        const current = dragPos ?? { right: display.right, bottom: display.bottom }
         dragRef.current = { startX: e.clientX, startY: e.clientY, ...current }
         draggedRef.current = false
       },
@@ -319,22 +300,15 @@ function XiaoguaiFloat(): ReactElement {
         const right = Math.max(0, Math.min(drag.right - dx, window.innerWidth - 40))
         const bottom = Math.max(0, Math.min(drag.bottom - dy, window.innerHeight - 40))
         dragRef.current = { ...drag, right, bottom }
-        posRef.current = { right, bottom }
-        if (floatRef.current !== null) {
-          floatRef.current.style.right = `${right}px`
-          floatRef.current.style.bottom = `${bottom}px`
-        }
+        setDragPos({ right, bottom })
       },
       onPointerUp: () => {
         if (dragRef.current === null) return
         const wasDrag = draggedRef.current
-        const finalPos = { right: dragRef.current.right, bottom: dragRef.current.bottom }
+        const finalPos = dragPos
         clearDrag()
-        if (wasDrag) {
-          posRef.current = finalPos
-          void API.interact('dragEnd', finalPos).then(() => {
-            // host 确认后的下一轮快照会带新位置；effect 用 posRef 优先，不会跳回旧值
-          })
+        if (wasDrag && finalPos !== null) {
+          void API.interact('dragEnd', finalPos)
         } else if (!wasDrag) {
           // 单击 = 摸头（只播一次）
           void API.interact('pat').then(r => { if (r.bubble) setUi({ bubble: r.bubble, bubbleAt: Date.now() }) })

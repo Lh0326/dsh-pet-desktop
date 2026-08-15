@@ -55,14 +55,40 @@ impl DshHost {
         Err(format!("dsh 服务 {timeout_secs}s 内未就绪"))
     }
 
-    /// 应用退出时结束子进程（仅当是我们拉起的）
+    /// 应用退出时结束子进程（仅当是我们拉起的）。
+    /// Windows 下 kill 只杀 cmd.exe，node 子进程会存活并继续占用 3080，
+    /// 导致"重启"实际是 no-op（start 探测到端口在用直接跳过）。
+    /// 因此先杀进程树（taskkill /T），再兜底 kill。
     pub fn stop(&self) {
+        #[cfg(windows)]
+        fn kill_tree(pid: u32) {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .creation_flags(0x0800_0000)
+                .status();
+        }
+        #[cfg(not(windows))]
+        fn kill_tree(_pid: u32) {}
+
         if let Ok(mut guard) = self.child.lock() {
             if let Some(c) = guard.as_mut() {
+                kill_tree(c.id());
                 let _ = c.kill();
                 let _ = c.wait();
             }
             *guard = None;
+        }
+        // cmd 树外残留的 dsh（用户手动起的/早前泄漏的）：按端口找 PID 清掉，
+        // 否则重启永远探测到"已在运行"。
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command",
+                    "Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"])
+                .creation_flags(0x0800_0000)
+                .status();
         }
     }
 }

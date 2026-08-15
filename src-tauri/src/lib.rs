@@ -4,6 +4,7 @@ mod dsh_host;
 
 use dsh_host::DshHost;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
@@ -51,9 +52,36 @@ pub fn run() {
                         let host = app.state::<Arc<DshHost>>();
                         host.stop();
                         let h = host.inner().clone();
+                        let handle = app.clone();
+                        // 主窗先显示"正在重启"等待页并离开旧 dsh 页面
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.eval(
+                                "document.body.innerHTML='<div style=\"display:flex;height:100vh;align-items:center;justify-content:center;font-size:16px;color:#666;font-family:sans-serif\">正在重启 dsh 服务…</div>';document.body.style.margin='0';",
+                            );
+                        }
                         std::thread::spawn(move || {
-                            let _ = h.start();
-                            let _ = h.wait_ready(60);
+                            // 等 3080 端口真正释放（taskkill 异步完成）
+                            for _ in 0..40 {
+                                if !h.is_running() { break; }
+                                std::thread::sleep(Duration::from_millis(500));
+                            }
+                            let result = h.start().and_then(|()| h.wait_ready(90));
+                            match result {
+                                Ok(()) => {
+                                    // 主窗此刻在"正在重启"占位页（无事件监听），直接导航
+                                    if let Some(w) = handle.get_webview_window("main") {
+                                        let _ = w.eval(&format!("window.location.href='{}';", dsh_host::DSH_URL));
+                                    }
+                                }
+                                Err(e) => {
+                                    if let Some(w) = handle.get_webview_window("main") {
+                                        let _ = w.eval(&format!(
+                                            "document.body.innerText='dsh 重启失败: {}';",
+                                            e.replace('\'', "")
+                                        ));
+                                    }
+                                }
+                            }
                         });
                     }
                     "quit" => {
