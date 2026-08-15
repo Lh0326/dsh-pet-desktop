@@ -3,9 +3,10 @@
   "source": "idle 待机.mp4",
   "frameSize": 512,
   "frameCount": 34,
-  "fps": 15,
+  "fps": 30,
   "loop": true,
   "layout": "horizontal",
   "sheet": "assets/pet/idle_spritesheet.png",
-  "pipeline": "v3 black-border crop + watermark fill + white-removal + crop + normalize"
+  "pipeline": "v4 rembg+fill-holes(eye-white)+4-corner-watermark+aspect-preserving",
+  "videoFps": 30
 }

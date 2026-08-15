@@ -3,9 +3,10 @@
   "source": "互动‑拖拽 被拎起.mp4",
   "frameSize": 512,
   "frameCount": 30,
-  "fps": 15,
+  "fps": 30,
   "loop": true,
   "layout": "horizontal",
   "sheet": "assets/pet/pet-drag_spritesheet.png",
-  "pipeline": "v3 black-border crop + watermark fill + white-removal + crop + normalize"
+  "pipeline": "v4 rembg+fill-holes(eye-white)+4-corner-watermark+aspect-preserving",
+  "videoFps": 30
 }

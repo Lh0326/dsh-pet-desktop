@@ -1,0 +1,5 @@
+# 小乖桌宠 bundle patch：向 web 插件名册插入插件行。
+# host 半区（状态机+API路由）+ client 半区（React全局浮层）同由本包装载。
+- insert:
+    - id: xiaoguai-pet
+      name: 'dsh-xiaoguai-pet'

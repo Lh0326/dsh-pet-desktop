@@ -3,9 +3,10 @@
   "source": "confirm 呼叫确认.mp4",
   "frameSize": 512,
   "frameCount": 20,
-  "fps": 15,
+  "fps": 30,
   "loop": true,
   "layout": "horizontal",
   "sheet": "assets/pet/confirm_spritesheet.png",
-  "pipeline": "v3 black-border crop + watermark fill + white-removal + crop + normalize"
+  "pipeline": "v4 rembg+fill-holes(eye-white)+4-corner-watermark+aspect-preserving",
+  "videoFps": 30
 }
