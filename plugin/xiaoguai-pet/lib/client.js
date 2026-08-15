@@ -1,6 +1,9 @@
 window.__ModuleLoader__.load({
 	id: "dsh-xiaoguai-pet",
-	factory: (require, module, exports) => {
+	factory: (require) => {
+		var module = { exports: {} };
+		var exports = module.exports;
+		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 "use strict";
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -23,7 +26,8 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/client.ts
 var client_exports = {};
 __export(client_exports, {
-  apply: () => apply
+  apply: () => apply,
+  inject: () => inject
 });
 module.exports = __toCommonJS(client_exports);
 var import_react = require("react");
@@ -60,6 +64,7 @@ function subscribe(l) {
     listeners.delete(l);
   };
 }
+var inject = [];
 function apply() {
   void loadMetas();
   const container = document.createElement("div");
@@ -293,5 +298,6 @@ function XiaoguaiFloat() {
   return (0, import_react_dom.createPortal)(float, document.body);
 }
 
+		return module.exports;
 	}
 });

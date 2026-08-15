@@ -70,6 +70,9 @@ function subscribe(l: () => void): () => void {
   return () => { listeners.delete(l) }
 }
 
+/** 客户端半区无需宿主服务（纯浮层+fetch），inject 为空数组（loader 约定必须存在） */
+export const inject: string[] = []
+
 export function apply(): void {
   void loadMetas()
 

@@ -84,6 +84,9 @@ pub fn run() {
                 }
             });
 
+            // —— 桌宠已迁至 dsh 插件形态（plugin/xiaoguai-pet，页面内浮层），
+            //    Tauri 壳不再创建系统级透明窗 ——
+
             Ok(())
         })
         .on_window_event(|window, event| {

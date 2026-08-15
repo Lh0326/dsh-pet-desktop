@@ -28,8 +28,12 @@ const cjsResult = await build({
 const cjs = cjsResult.outputFiles[0].text
 const final = `window.__ModuleLoader__.load({
 \tid: "dsh-xiaoguai-pet",
-\tfactory: (require, module, exports) => {
+\tfactory: (require) => {
+\t\tvar module = { exports: {} };
+\t\tvar exports = module.exports;
+\t\tObject.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 ${cjs}
+\t\treturn module.exports;
 \t}
 });
 `
