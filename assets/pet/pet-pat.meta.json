@@ -1,0 +1,11 @@
+{
+  "state": "pet-pat",
+  "source": "互动‑抚摸 摸头.mp4",
+  "frameSize": 512,
+  "frameCount": 23,
+  "fps": 15,
+  "loop": true,
+  "layout": "horizontal",
+  "sheet": "assets/pet/pet-pat_spritesheet.png",
+  "pipeline": "v3 black-border crop + watermark fill + white-removal + crop + normalize"
+}

@@ -1,0 +1,11 @@
+{
+  "state": "speaking",
+  "source": "speaking 说话讲解.mp4",
+  "frameSize": 512,
+  "frameCount": 26,
+  "fps": 15,
+  "loop": true,
+  "layout": "horizontal",
+  "sheet": "assets/pet/speaking_spritesheet.png",
+  "pipeline": "v3 black-border crop + watermark fill + white-removal + crop + normalize"
+}

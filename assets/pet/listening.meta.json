@@ -1,0 +1,11 @@
+{
+  "state": "listening",
+  "source": "listening 倾听.mp4",
+  "frameSize": 512,
+  "frameCount": 30,
+  "fps": 15,
+  "loop": true,
+  "layout": "horizontal",
+  "sheet": "assets/pet/listening_spritesheet.png",
+  "pipeline": "v3 black-border crop + watermark fill + white-removal + crop + normalize"
+}

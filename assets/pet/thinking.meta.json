@@ -1,0 +1,11 @@
+{
+  "state": "thinking",
+  "source": "thinking 思考.mp4",
+  "frameSize": 512,
+  "frameCount": 33,
+  "fps": 15,
+  "loop": true,
+  "layout": "horizontal",
+  "sheet": "assets/pet/thinking_spritesheet.png",
+  "pipeline": "v3 black-border crop + watermark fill + white-removal + crop + normalize"
+}
