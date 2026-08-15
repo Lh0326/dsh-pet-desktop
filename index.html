@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>助手小乖 · dsh</title>
+    <script type="module" src="/src/main.ts" defer></script>
+    <style>
+      body {
+        margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
+        background: linear-gradient(160deg, #1a2332 0%, #0d1520 100%);
+        color: #e8eef7; font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      }
+      .box { text-align: center; }
+      .whale { font-size: 64px; animation: bob 2.2s ease-in-out infinite; }
+      @keyframes bob { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-12px)} }
+      #status { margin-top: 18px; font-size: 15px; opacity: .85; }
+      .hint { margin-top: 8px; font-size: 12px; opacity: .45; }
+    </style>
+  </head>
+  <body>
+    <main class="box">
+      <div class="whale">🐋</div>
+      <div id="status">正在初始化…</div>
+      <div class="hint">助手小乖 · DeepSeek Harness 桌面版</div>
+    </main>
+  </body>
+</html>
