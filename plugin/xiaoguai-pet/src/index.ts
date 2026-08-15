@@ -154,9 +154,7 @@ export const inject = ['webServer']
 
 export function apply(ctx: Context): void {
   const service = new XiaoguaiService(ctx)
-  ctx.service('xiaoguai', service, true)
-
-  // 注册 API + 素材路由（与鲸鱼娘 /api/pet/* 同模式）
+  // Service 构造时已向 ctx 注册（super(ctx,'xiaoguai')）；apply 只挂路由
   const routes = makeXiaoguaiRoutes({ service, packageRoot: packageRootFrom(import.meta.url) })
   const disposers = routes.map((route) => ctx.webServer.register(route))
   ctx.effect(() => () => { for (const dispose of disposers) dispose() }, 'xiaoguai: routes')
