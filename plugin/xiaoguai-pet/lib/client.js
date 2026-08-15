@@ -267,7 +267,8 @@ function XiaoguaiFloat() {
         e.target.setPointerCapture?.(e.pointerId);
         setHovered(false);
         preloadSpritesheet("pet-drag");
-        const current = dragPos ?? { right: display.right, bottom: display.bottom };
+        const rect = floatRef.current?.getBoundingClientRect();
+        const current = rect !== void 0 ? { right: Math.max(0, window.innerWidth - rect.right), bottom: Math.max(0, window.innerHeight - rect.bottom) } : { right: display.right, bottom: display.bottom };
         dragRef.current = { startX: e.clientX, startY: e.clientY, ...current };
         draggedRef.current = false;
       },
@@ -284,17 +285,18 @@ function XiaoguaiFloat() {
         }
         const right = Math.max(0, Math.min(drag.right - dx, window.innerWidth - 40));
         const bottom = Math.max(0, Math.min(drag.bottom - dy, window.innerHeight - 40));
-        dragRef.current = { ...drag, right, bottom };
+        dragRef.current = { startX: drag.startX, startY: drag.startY, right, bottom };
         setDragPos({ right, bottom });
       },
       onPointerUp: () => {
         if (dragRef.current === null) return;
         const wasDrag = draggedRef.current;
-        const finalPos = dragPos;
-        clearDrag();
-        if (wasDrag && finalPos !== null) {
+        const finalPos = wasDrag ? { right: dragRef.current.right, bottom: dragRef.current.bottom } : null;
+        dragRef.current = null;
+        setUi({ local: null });
+        if (finalPos !== null) {
           void API.interact("dragEnd", finalPos);
-        } else if (!wasDrag) {
+        } else {
           void API.interact("pat").then((r) => {
             if (r.bubble) setUi({ bubble: r.bubble, bubbleAt: Date.now() });
           });

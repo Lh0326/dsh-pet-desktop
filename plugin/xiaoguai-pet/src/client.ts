@@ -282,7 +282,12 @@ function XiaoguaiFloat(): ReactElement {
         ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
         setHovered(false)   // 按下即收面板：摸头气泡不被面板遮挡（用户反馈#3）
         preloadSpritesheet('pet-drag')
-        const current = dragPos ?? { right: display.right, bottom: display.bottom }
+        // 锚点取"当前真实渲染位置"——DOM rect 是唯一不骗人的来源
+        // （stale state / stale closure 在轮询重渲染下都会给出过期锚点 = 挪一点飞很远的根因）
+        const rect = floatRef.current?.getBoundingClientRect()
+        const current = rect !== undefined
+          ? { right: Math.max(0, window.innerWidth - rect.right), bottom: Math.max(0, window.innerHeight - rect.bottom) }
+          : { right: display.right, bottom: display.bottom }
         dragRef.current = { startX: e.clientX, startY: e.clientY, ...current }
         draggedRef.current = false
       },
@@ -299,17 +304,21 @@ function XiaoguaiFloat(): ReactElement {
         }
         const right = Math.max(0, Math.min(drag.right - dx, window.innerWidth - 40))
         const bottom = Math.max(0, Math.min(drag.bottom - dy, window.innerHeight - 40))
-        dragRef.current = { ...drag, right, bottom }
+        // 唯一真相 = dragRef（ref 无闭包过期问题）；state 只做渲染镜像
+        dragRef.current = { startX: drag.startX, startY: drag.startY, right, bottom }
         setDragPos({ right, bottom })
       },
       onPointerUp: () => {
         if (dragRef.current === null) return
         const wasDrag = draggedRef.current
-        const finalPos = dragPos
-        clearDrag()
-        if (wasDrag && finalPos !== null) {
+        const finalPos = wasDrag
+          ? { right: dragRef.current.right, bottom: dragRef.current.bottom }
+          : null
+        dragRef.current = null
+        setUi({ local: null })   // 拖拽结束一律回落
+        if (finalPos !== null) {
           void API.interact('dragEnd', finalPos)
-        } else if (!wasDrag) {
+        } else {
           // 单击 = 摸头（只播一次）
           void API.interact('pat').then(r => { if (r.bubble) setUi({ bubble: r.bubble, bubbleAt: Date.now() }) })
           setUi({ local: 'pet-pat' })
