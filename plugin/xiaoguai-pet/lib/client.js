@@ -65,7 +65,15 @@ function subscribe(l) {
   };
 }
 var inject = [];
+var preloaded = /* @__PURE__ */ new Set();
+function preloadSpritesheet(a) {
+  if (preloaded.has(a)) return;
+  preloaded.add(a);
+  const img = new Image();
+  img.src = `/xiaoguai/assets/${a}_spritesheet.png`;
+}
 function apply() {
+  document.querySelectorAll("div[data-xiaoguai-pet-root]").forEach((el) => el.remove());
   void loadMetas();
   const container = document.createElement("div");
   container.dataset.xiaoguaiPetRoot = "";
@@ -133,11 +141,18 @@ function XiaoguaiFloat() {
   const animation = state.local ?? snapshot?.animation ?? "idle";
   const spriteRef = (0, import_react.useRef)(null);
   const floatRef = (0, import_react.useRef)(null);
-  const [dragPos, setDragPos] = (0, import_react.useState)(null);
+  const posRef = (0, import_react.useRef)(null);
   const dragRef = (0, import_react.useRef)(null);
   const draggedRef = (0, import_react.useRef)(false);
   const [hovered, setHovered] = (0, import_react.useState)(false);
   const hidePanelTimer = (0, import_react.useRef)(null);
+  (0, import_react.useEffect)(() => {
+    const target = posRef.current ?? { right: display.right, bottom: display.bottom };
+    if (floatRef.current !== null && dragRef.current === null) {
+      floatRef.current.style.right = `${target.right}px`;
+      floatRef.current.style.bottom = `${target.bottom}px`;
+    }
+  });
   const showPanel = () => {
     if (hidePanelTimer.current !== null) {
       window.clearTimeout(hidePanelTimer.current);
@@ -159,10 +174,13 @@ function XiaoguaiFloat() {
   const prevAnimRef = (0, import_react.useRef)(null);
   animRef.current = animation;
   (0, import_react.useEffect)(() => {
-    if (prevAnimRef.current !== animation && spriteRef.current !== null) {
+    if (prevAnimRef.current !== animation) {
       prevAnimRef.current = animation;
+      preloadSpritesheet(animation);
       frameRef.current = { anim: null, index: 0, elapsed: 0, finished: false };
-      spriteRef.current.style.backgroundPosition = "0px 0";
+      if (spriteRef.current !== null) {
+        spriteRef.current.style.backgroundPosition = "0px 0";
+      }
     }
   }, [animation]);
   (0, import_react.useEffect)(() => {
@@ -216,16 +234,16 @@ function XiaoguaiFloat() {
     dragRef.current = null;
     setUi({ local: null });
   };
-  const pos = dragPos ?? { right: display.right, bottom: display.bottom };
   const size = display.size;
   const float = (0, import_react.createElement)(
     "div",
     {
       ref: floatRef,
       style: {
+        // right/bottom 不在此！位置 100% 由 posRef effect + pointermove 直写。
+        // React style diff 一旦拥有过的属性，任何重渲染都可能用旧值覆写命令式写入，
+        // 这是分身残影的根本来源。位置属性从头到尾不给 React。
         position: "fixed",
-        right: pos.right,
-        bottom: pos.bottom,
         zIndex: 2147483e3,
         display: "flex",
         flexDirection: "column",
@@ -246,9 +264,7 @@ function XiaoguaiFloat() {
         backgroundImage: `url(/xiaoguai/assets/${animation}_spritesheet.png)`,
         backgroundSize: `${size * (metas.get(animation)?.frameCount ?? 1)}px ${size}px`,
         backgroundRepeat: "no-repeat",
-        // 注意：backgroundPosition 不写在 React style 里——
-        // 帧位置完全由 rAF 循环直写 DOM；React 重渲染（如拖拽更新 pos）会重置
-        // 内联 style 导致闪回第 0 帧/旧位置，出现"两个小乖"残影（bug#2 根因）
+        // backgroundPosition 同理不归 React 管（rAF 直写）
         imageRendering: "auto",
         touchAction: "none",
         cursor: dragRef.current === null ? "grab" : "grabbing"
@@ -257,7 +273,10 @@ function XiaoguaiFloat() {
         e.preventDefault();
         e.target.setPointerCapture?.(e.pointerId);
         setHovered(false);
-        const current = dragPos ?? { right: display.right, bottom: display.bottom };
+        preloadSpritesheet("pet-drag");
+        const rect = floatRef.current?.getBoundingClientRect();
+        const current = rect !== void 0 ? { right: window.innerWidth - rect.right, bottom: window.innerHeight - rect.bottom } : posRef.current ?? { right: display.right, bottom: display.bottom };
+        posRef.current = current;
         dragRef.current = { startX: e.clientX, startY: e.clientY, ...current };
         draggedRef.current = false;
       },
@@ -275,6 +294,7 @@ function XiaoguaiFloat() {
         const right = Math.max(0, Math.min(drag.right - dx, window.innerWidth - 40));
         const bottom = Math.max(0, Math.min(drag.bottom - dy, window.innerHeight - 40));
         dragRef.current = { ...drag, right, bottom };
+        posRef.current = { right, bottom };
         if (floatRef.current !== null) {
           floatRef.current.style.right = `${right}px`;
           floatRef.current.style.bottom = `${bottom}px`;
@@ -286,8 +306,9 @@ function XiaoguaiFloat() {
         const finalPos = { right: dragRef.current.right, bottom: dragRef.current.bottom };
         clearDrag();
         if (wasDrag) {
-          setDragPos(finalPos);
-          void API.interact("dragEnd", finalPos);
+          posRef.current = finalPos;
+          void API.interact("dragEnd", finalPos).then(() => {
+          });
         } else if (!wasDrag) {
           void API.interact("pat").then((r) => {
             if (r.bubble) setUi({ bubble: r.bubble, bubbleAt: Date.now() });

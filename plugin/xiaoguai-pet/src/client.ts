@@ -83,7 +83,19 @@ function subscribe(l: () => void): () => void {
 /** 客户端半区无需宿主服务（纯浮层+fetch），inject 为空数组（loader 约定必须存在） */
 export const inject: string[] = []
 
-export function apply(): void {
+/** 精灵图预加载（消除动画切换时的首次加载空白——"分身/闪白"的第二来源） */
+const preloaded = new Set<string>()
+function preloadSpritesheet(a: Animation): void {
+  if (preloaded.has(a)) return
+  preloaded.add(a)
+  const img = new Image()
+  img.src = `/xiaoguai/assets/${a}_spritesheet.png`
+}
+
+export function apply(): (() => void) | void {
+  // 双挂载防护：dsh 页面热重载/插件重启用时，旧浮层必须先清理，
+  // 否则两个 React root 各画一只小乖（"分身"的第一来源）
+  document.querySelectorAll('div[data-xiaoguai-pet-root]').forEach(el => el.remove())
   void loadMetas()
 
   const container = document.createElement('div')
@@ -94,7 +106,6 @@ export function apply(): void {
 
   const poll = (): void => {
     API.state().then(s => {
-      // host 相位变化时清除本地暂时态（除非正在拖拽中）
       setUi({ snapshot: s })
     }, () => { /* transport 失败下轮重试 */ })
   }
@@ -147,11 +158,23 @@ function XiaoguaiFloat(): ReactElement {
 
   const spriteRef = useRef<HTMLDivElement | null>(null)
   const floatRef = useRef<HTMLDivElement | null>(null)
-  const [dragPos, setDragPos] = useState<{ right: number; bottom: number } | null>(null)
+  /** 位置真相只在 ref（命令式世界）：React 渲染永远不带 right/bottom，
+   *  重渲染不会覆写位置 → 根治轮询/动画切换时的位置跳变（分身根因） */
+  const posRef = useRef<{ right: number; bottom: number } | null>(null)
   const dragRef = useRef<{ startX: number; startY: number; right: number; bottom: number } | null>(null)
   const draggedRef = useRef(false)
   const [hovered, setHovered] = useState(false)
   const hidePanelTimer = useRef<number | null>(null)
+
+  // 位置同步 effect：posRef 变化（含 host 快照里的持久化位置）→ 直写 DOM。
+  // 只在"非拖拽中"执行，拖拽由 pointermove 直写。
+  useEffect(() => {
+    const target = posRef.current ?? { right: display.right, bottom: display.bottom }
+    if (floatRef.current !== null && dragRef.current === null) {
+      floatRef.current.style.right = `${target.right}px`
+      floatRef.current.style.bottom = `${target.bottom}px`
+    }
+  })
 
   /** 悬停面板显示策略（修复点击死角）：
    *  面板贴着小乖头顶（无间隙）+ pointerleave 延迟 400ms 收起，
@@ -171,12 +194,16 @@ function XiaoguaiFloat(): ReactElement {
   const prevAnimRef = useRef<Animation | null>(null)
   animRef.current = animation
 
-  // 动画切换瞬间（React 重建了 style）同步补写首帧位置，消除一帧空白/旧帧闪现
+  // 动画切换瞬间（React 重建了 style）同步补写首帧位置 + 预加载新精灵图，
+  // 消除一帧空白/旧帧闪现（分身残影的第三来源：图片未加载完成时 backgroundImage 短暂为空）
   useEffect(() => {
-    if (prevAnimRef.current !== animation && spriteRef.current !== null) {
+    if (prevAnimRef.current !== animation) {
       prevAnimRef.current = animation
+      preloadSpritesheet(animation)
       frameRef.current = { anim: null, index: 0, elapsed: 0, finished: false }
-      spriteRef.current.style.backgroundPosition = '0px 0'
+      if (spriteRef.current !== null) {
+        spriteRef.current.style.backgroundPosition = '0px 0'
+      }
     }
   }, [animation])
 
@@ -232,13 +259,15 @@ function XiaoguaiFloat(): ReactElement {
     setUi({ local: null })   // 拖拽结束一律回落（用户反馈修复）
   }
 
-  const pos = dragPos ?? { right: display.right, bottom: display.bottom }
   const size = display.size
 
   const float = createElement('div', {
     ref: floatRef,
     style: {
-      position: 'fixed', right: pos.right, bottom: pos.bottom, zIndex: 2147483000,
+      // right/bottom 不在此！位置 100% 由 posRef effect + pointermove 直写。
+      // React style diff 一旦拥有过的属性，任何重渲染都可能用旧值覆写命令式写入，
+      // 这是分身残影的根本来源。位置属性从头到尾不给 React。
+      position: 'fixed', zIndex: 2147483000,
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       userSelect: 'none', WebkitUserSelect: 'none',
     } as React.CSSProperties,
@@ -254,9 +283,7 @@ function XiaoguaiFloat(): ReactElement {
         backgroundImage: `url(/xiaoguai/assets/${animation}_spritesheet.png)`,
         backgroundSize: `${size * (metas.get(animation)?.frameCount ?? 1)}px ${size}px`,
         backgroundRepeat: 'no-repeat',
-        // 注意：backgroundPosition 不写在 React style 里——
-        // 帧位置完全由 rAF 循环直写 DOM；React 重渲染（如拖拽更新 pos）会重置
-        // 内联 style 导致闪回第 0 帧/旧位置，出现"两个小乖"残影（bug#2 根因）
+        // backgroundPosition 同理不归 React 管（rAF 直写）
         imageRendering: 'auto',
         touchAction: 'none',
         cursor: dragRef.current === null ? 'grab' : 'grabbing',
@@ -265,7 +292,12 @@ function XiaoguaiFloat(): ReactElement {
         e.preventDefault()
         ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
         setHovered(false)   // 按下即收面板：摸头气泡不被面板遮挡（用户反馈#3）
-        const current = dragPos ?? { right: display.right, bottom: display.bottom }
+        preloadSpritesheet('pet-drag')
+        const rect = floatRef.current?.getBoundingClientRect()
+        const current = rect !== undefined
+          ? { right: window.innerWidth - rect.right, bottom: window.innerHeight - rect.bottom }
+          : (posRef.current ?? { right: display.right, bottom: display.bottom })
+        posRef.current = current
         dragRef.current = { startX: e.clientX, startY: e.clientY, ...current }
         draggedRef.current = false
       },
@@ -283,7 +315,7 @@ function XiaoguaiFloat(): ReactElement {
         const right = Math.max(0, Math.min(drag.right - dx, window.innerWidth - 40))
         const bottom = Math.max(0, Math.min(drag.bottom - dy, window.innerHeight - 40))
         dragRef.current = { ...drag, right, bottom }
-        // 拖拽期间直写 DOM 不走 React state（不触发重渲染，消除双影/残影）
+        posRef.current = { right, bottom }
         if (floatRef.current !== null) {
           floatRef.current.style.right = `${right}px`
           floatRef.current.style.bottom = `${bottom}px`
@@ -295,8 +327,10 @@ function XiaoguaiFloat(): ReactElement {
         const finalPos = { right: dragRef.current.right, bottom: dragRef.current.bottom }
         clearDrag()
         if (wasDrag) {
-          setDragPos(finalPos)           // 拖拽结束才让 React 接管位置（一次提交）
-          void API.interact('dragEnd', finalPos)
+          posRef.current = finalPos
+          void API.interact('dragEnd', finalPos).then(() => {
+            // host 确认后的下一轮快照会带新位置；effect 用 posRef 优先，不会跳回旧值
+          })
         } else if (!wasDrag) {
           // 单击 = 摸头（只播一次）
           void API.interact('pat').then(r => { if (r.bubble) setUi({ bubble: r.bubble, bubbleAt: Date.now() }) })
