@@ -4,3 +4,6 @@ src-tauri/target/
 *.local
 .DS_Store
 素材原始件/
+
+# 素材原始视频不入库（太大，本地保留）
+docs/*.mp4
