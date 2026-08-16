@@ -326,6 +326,8 @@ function XiaoguaiFloat(): ReactElement {
       style: {
         width: size, height: size,
         // 单图集: backgroundImage/Size 恒定不随动画变(动画只改position)
+        // 图集失效时以边框占位提示(不隐身)
+        border: atlasBroken ? '2px dashed #f59e0b' : undefined,
         backgroundImage: 'url(/xiaoguai/assets/atlas.webp)',
         backgroundSize: `${size * (atlas ? Math.max(...Object.values(atlas.frames)) : 34)}px ${size * (atlas ? Object.keys(atlas.rows).length : 10)}px`,
         backgroundRepeat: 'no-repeat',
