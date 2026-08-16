@@ -75,6 +75,11 @@ interface PersistShape {
   affinity?: { points: number; pets: number; feeds: number; turns: number }
 }
 
+/** 诊断探针：atlas 被浏览器实际拉取的次数（排查"隐身"用） */
+let __atlasHits = 0
+export function atlasHits(): number { return __atlasHits }
+export function bumpAtlasHits(): void { __atlasHits += 1 }
+
 /** 小乖服务 */
 export class XiaoguaiService extends Service {
   static inject: string[] = []

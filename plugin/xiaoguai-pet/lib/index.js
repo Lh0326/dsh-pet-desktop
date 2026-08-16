@@ -99,6 +99,12 @@ function assetRoutes(packageRoot) {
     kind: "exact",
     path: `${XG_ASSET_PREFIX}/${file.name}`,
     handler: (req, res) => {
+      if (file.name === "atlas.webp" && req.method === "GET") {
+        try {
+          bumpAtlasHits();
+        } catch {
+        }
+      }
       if (req.method !== "GET" && req.method !== "HEAD") {
         res.writeHead(405);
         res.end();
@@ -126,6 +132,7 @@ function makeXiaoguaiRoutes(deps) {
   const { service, packageRoot } = deps;
   return [
     getRoute(`${XG_API_PREFIX}/state`, () => service.state()),
+    getRoute(`${XG_API_PREFIX}/diag`, () => ({ atlasHits: atlasHits(), time: Date.now() })),
     postRoute(`${XG_API_PREFIX}/interact`, (body) => {
       const kind = body.kind;
       if (kind !== "pat" && kind !== "feed" && kind !== "dragEnd" && kind !== "hide" && kind !== "summon") {
@@ -168,6 +175,13 @@ function rankOf(points) {
 }
 var PAT_COOLDOWN_MS = 3e3;
 var FEED_COOLDOWN_MS = 4e3;
+var __atlasHits = 0;
+function atlasHits() {
+  return __atlasHits;
+}
+function bumpAtlasHits() {
+  __atlasHits += 1;
+}
 var XiaoguaiService = class extends Service {
   static inject = [];
   phase = "idle";
@@ -323,6 +337,8 @@ export {
   XiaoguaiService,
   animationForPhase,
   apply,
+  atlasHits,
+  bumpAtlasHits,
   inject,
   name
 };

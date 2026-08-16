@@ -86,12 +86,15 @@ export const inject: string[] = []
  *  加载≠就绪——大图下载后仍需解码,解码期间 backgroundImage 切换会露出
  *  旧图/空白,与位置更新叠加成"第二个小乖"。用 decode() 确保像素真正
  *  进显存后才允许动画切到该状态;启动时全部预解码。 */
+/** 图集加载失败兜底标记（atlas 404/解码失败 → 橙色虚线边框占位，
+ *  绝不出现"隐身但可交互"的迷惑状态） */
+let atlasBroken = false
 let atlasDecoded: Promise<void> | null = null
 function ensureDecoded(_a: Animation): Promise<void> {
   if (atlasDecoded === null) {
     const img = new Image()
     img.src = '/xiaoguai/assets/atlas.webp'
-    atlasDecoded = img.decode().then(() => undefined).catch(() => undefined)
+    atlasDecoded = img.decode().then(() => undefined).catch(() => { atlasBroken = true })
   }
   return atlasDecoded
 }

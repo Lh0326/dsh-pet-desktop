@@ -61,12 +61,15 @@ function subscribe(l) {
   };
 }
 var inject = [];
+var atlasBroken = false;
 var atlasDecoded = null;
 function ensureDecoded(_a) {
   if (atlasDecoded === null) {
     const img = new Image();
     img.src = "/xiaoguai/assets/atlas.webp";
-    atlasDecoded = img.decode().then(() => void 0).catch(() => void 0);
+    atlasDecoded = img.decode().then(() => void 0).catch(() => {
+      atlasBroken = true;
+    });
   }
   return atlasDecoded;
 }

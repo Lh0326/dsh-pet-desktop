@@ -9,6 +9,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { XiaoguaiService } from './index.ts'
+import { atlasHits, bumpAtlasHits } from './index.ts'
 
 export const XG_API_PREFIX = '/api/xiaoguai'
 export const XG_ASSET_PREFIX = '/xiaoguai/assets'
@@ -100,6 +101,7 @@ function assetRoutes(packageRoot: string): WebRoute[] {
     kind: 'exact',
     path: `${XG_ASSET_PREFIX}/${file.name}`,
     handler: (req, res) => {
+      if (file.name === 'atlas.webp' && req.method === 'GET') { try { bumpAtlasHits() } catch { /* 诊断不致命 */ } }
       if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return }
       readFile(join(packageRoot, 'assets', file.name)).then((body) => {
         res.writeHead(200, {
@@ -119,6 +121,7 @@ export function makeXiaoguaiRoutes(deps: { service: XiaoguaiService; packageRoot
   const { service, packageRoot } = deps
   return [
     getRoute(`${XG_API_PREFIX}/state`, () => service.state()),
+    getRoute(`${XG_API_PREFIX}/diag`, () => ({ atlasHits: atlasHits(), time: Date.now() })),
     postRoute(`${XG_API_PREFIX}/interact`, (body) => {
       const kind = body.kind
       if (kind !== 'pat' && kind !== 'feed' && kind !== 'dragEnd' && kind !== 'hide' && kind !== 'summon') {
