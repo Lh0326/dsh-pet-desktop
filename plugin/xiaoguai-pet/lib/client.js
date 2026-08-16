@@ -407,21 +407,22 @@ async function wakeStart() {
     const analyser = audioCtx.createAnalyser();
     analyser.fftSize = 512;
     src.connect(analyser);
-    wake = { stream, audioCtx, analyser, recorder: null, ringChunks: [], chunks: [], timer: 0, state: "idle", armedAt: 0, cancelled: false };
-    const ringRec = new MediaRecorder(stream, { mimeType: "audio/webm" });
-    ringRec.ondataavailable = (e) => {
+    const PROC_SIZE = 2048;
+    const proc = audioCtx.createScriptProcessor(PROC_SIZE, 1, 1);
+    proc.onaudioprocess = (ev) => {
       const w = wake;
-      if (w === null || e.data.size === 0) return;
-      if (w.state === "idle") {
-        w.ringChunks.push(e.data);
-        if (w.ringChunks.length > 6) w.ringChunks.shift();
-      } else if (w.state === "armed") {
-        w.chunks.push(e.data);
-      }
+      if (w === null) return;
+      w.pcmRing.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
+      while (w.pcmRing.length > 24) w.pcmRing.shift();
     };
-    ringRec.start(250);
+    src.connect(proc);
+    const mute = audioCtx.createGain();
+    mute.gain.value = 0;
+    proc.connect(mute);
+    mute.connect(audioCtx.destination);
+    wake = { stream, audioCtx, analyser, proc, pcmRing: [], timer: 0, state: "idle", armedAt: 0, cancelled: false };
     const buf = new Float32Array(analyser.fftSize);
-    wake.timer = window.setInterval(async () => {
+    wake.timer = window.setInterval(() => {
       const w = wake;
       if (w === null) return;
       if (voice !== null || ui.local !== null) {
@@ -433,38 +434,33 @@ async function wakeStart() {
       for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
       const rms = Math.sqrt(sum / buf.length);
       const now = performance.now();
-      w.__peak = Math.max(w.__peak ?? 0, rms);
-      if (Math.floor(now / 2e3) !== Math.floor((now - 120) / 2e3)) {
-        const peak = w.__peak ?? 0;
-        setUi({ bubble: `\u{1F442}\u5F85\u673A \u97F3\u91CF\u5CF0\u503C ${peak.toFixed(3)} / \u95E8\u9650 ${WAKE_VOLUME_THRESHOLD} ${peak > WAKE_VOLUME_THRESHOLD ? "\u2713\u80FD\u89E6\u53D1" : "\u2717\u4F4E\u4E8E\u95E8\u9650"}`, bubbleAt: Date.now() });
-        w.__peak = 0;
-      }
       if (w.state === "idle" && rms > WAKE_VOLUME_THRESHOLD) {
         w.state = "armed";
-        console.log(`[xg-wake] ARMED rms=${rms.toFixed(3)} ring=${w.ringChunks.length}\u5757`);
+        console.log(`[xg-wake] ARMED rms=${rms.toFixed(3)} ringBlocks=${w.pcmRing.length}`);
         setUi({ bubble: `\u{1F399} \u91C7\u96C6\u5524\u9192\u97F3\u9891\u4E2D(\u97F3\u91CF${rms.toFixed(3)})\u2026`, bubbleAt: Date.now() });
         w.armedAt = now;
-        w.chunks = [];
       } else if (w.state === "armed") {
         if (now - w.armedAt >= WAKE_ARM_MS) {
           w.state = "cooldown";
-          const all = [...w.ringChunks, ...w.chunks];
-          w.ringChunks = [];
-          w.chunks = [];
-          if (all.length > 0) {
-            void wakeJudge(new Blob(all, { type: "audio/webm" }));
+          const pcm = new Float32Array(w.pcmRing.length * PROC_SIZE);
+          let off = 0;
+          for (const blk of w.pcmRing) {
+            pcm.set(blk, off);
+            off += blk.length;
           }
+          w.pcmRing = [];
+          void wakeJudgePcm(pcm);
           setTimeout(() => {
             if (wake !== null && wake.state === "cooldown") wake.state = "idle";
           }, WAKE_COOLDOWN_MS);
-        } else if (rms < WAKE_VOLUME_THRESHOLD * 0.15 && now - w.armedAt > 1200) {
-          w.state = "cooldown";
-          w.ringChunks = [];
-          w.chunks = [];
-          setTimeout(() => {
-            if (wake !== null && wake.state === "cooldown") wake.state = "idle";
-          }, 800);
         }
+      }
+      ;
+      w.__peak = Math.max(w.__peak ?? 0, rms);
+      if (Math.floor(now / 2e3) !== Math.floor((now - 120) / 2e3)) {
+        const peak = w.__peak ?? 0;
+        if (w.state === "idle") setUi({ bubble: `\u{1F442}\u5F85\u673A \u97F3\u91CF\u5CF0\u503C ${peak.toFixed(3)} / \u95E8\u9650 ${WAKE_VOLUME_THRESHOLD} ${peak > WAKE_VOLUME_THRESHOLD ? "\u2713\u80FD\u89E6\u53D1" : "\u2717\u4F4E\u4E8E\u95E8\u9650"}`, bubbleAt: Date.now() });
+        w.__peak = 0;
       }
     }, 120);
     setUi({ bubble: '\u{1F442} \u5524\u9192\u5F85\u673A\u4E2D\uFF1A\u8BF4"\u5C0F\u4E56\u5C0F\u4E56"', bubbleAt: Date.now() });
@@ -472,39 +468,72 @@ async function wakeStart() {
     wake = null;
   }
 }
-function wakeStop() {
-  const w = wake;
-  wake = null;
-  if (w === null) return;
-  window.clearInterval(w.timer);
-  if (w.recorder !== null && w.recorder.state !== "inactive") {
-    w.recorder.onstop = () => void 0;
-    w.recorder.stop();
-  }
-  w.stream.getTracks().forEach((t) => t.stop());
-  void w.audioCtx.close();
+function pcmToWavBase64(pcm) {
+  const len = pcm.length;
+  const wav = new ArrayBuffer(44 + len * 2);
+  const view = new DataView(wav);
+  const w = (off, str) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
+  };
+  w(0, "RIFF");
+  view.setUint32(4, 36 + len * 2, true);
+  w(8, "WAVE");
+  w(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, 16e3, true);
+  view.setUint32(28, 32e3, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  w(36, "data");
+  view.setUint32(40, len * 2, true);
+  for (let i = 0; i < len; i++) view.setInt16(44 + i * 2, Math.max(-32768, Math.min(32767, pcm[i] * 32767)), true);
+  const bytes = new Uint8Array(wav);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return btoa(bin);
 }
-async function wakeJudge(blob) {
-  if (blob.size < 3e3) return;
+async function wakeJudgePcm(pcm) {
+  console.log(`[xg-wake] JUDGE-START pcm=${(pcm.length / 16e3).toFixed(2)}s`);
+  setUi({ bubble: `\u{1F4E6} \u5224\u5B9A\u97F3\u9891 ${(pcm.length / 16e3).toFixed(1)}s \u63D0\u4EA4\u4E2D\u2026`, bubbleAt: Date.now() });
+  if (pcm.length < 8e3) {
+    console.log("[xg-wake] drop: too short");
+    return;
+  }
   try {
-    const wavB64 = await blobToWavBase64(blob);
+    const wavB64 = pcmToWavBase64(pcm);
     const r = await fetch("/api/xiaoguai/voice/wake", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ audio_wav16k_mono: wavB64 })
     });
+    console.log(`[xg-wake] fetch ${r.status}`);
     if (!r.ok) {
-      console.log("[xg-wake] wake api not ok");
+      setUi({ bubble: `\u26A0 \u5524\u9192\u63A5\u53E3 ${r.status}`, bubbleAt: Date.now() });
       return;
     }
     const { score } = await r.json();
     console.log(`[xg-wake] score=${score ?? -1}`);
+    setUi({ bubble: `\u{1F50D} \u5524\u9192\u6253\u5206 ${((score ?? 0) * 100).toFixed(0)} \u5206(\u9608\u503C85)`, bubbleAt: Date.now() });
     if ((score ?? 0) > WAKE_SCORE_THRESHOLD) {
       setUi({ bubble: "\u6211\u5728\u542C\uFF01", bubbleAt: Date.now() });
       void voiceStart();
     }
-  } catch {
+  } catch (e) {
+    console.log("[xg-wake] JUDGE-ERR", e);
+    setUi({ bubble: "\u26A0 \u5524\u9192\u5224\u5B9A\u5F02\u5E38", bubbleAt: Date.now() });
   }
+}
+function wakeStop() {
+  const w = wake;
+  wake = null;
+  if (w === null) return;
+  window.clearInterval(w.timer);
+  w.proc.onaudioprocess = null;
+  w.proc.disconnect();
+  w.stream.getTracks().forEach((t) => t.stop());
+  void w.audioCtx.close();
 }
 function VoicePanel() {
   const state = (0, import_react.useSyncExternalStore)(subscribe, () => ui);

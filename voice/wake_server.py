@@ -31,7 +31,19 @@ def score_pcm_i16(pcm: np.ndarray) -> float:
     x = feats[-16:][None].astype(np.float32)
     return float(sess.run(['score'], {'input': x})[0].squeeze())
 
+# 诊断: 最近一次判定的完整现场(音频/分数/时间)
+_last = {'time': '', 'score': -1, 'wav_b64': '', 'seconds': 0}
+
 class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/last':
+            out = json.dumps(_last, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header('content-type', 'application/json; charset=utf-8')
+            self.send_header('content-length', str(len(out)))
+            self.end_headers(); self.wfile.write(out); return
+        self.send_response(404); self.end_headers()
+
     def do_POST(self):
         if self.path != '/wake':
             self.send_response(404); self.end_headers(); return
@@ -46,6 +58,17 @@ class H(BaseHTTPRequestHandler):
             else:
                 pcm = np.frombuffer(raw, dtype=np.int16)
             score = score_pcm_i16(pcm)
+            # 存诊断现场(音频转标准wav回存)
+            import time as _t
+            buf = io.BytesIO()
+            with wave.open(buf, 'wb') as wf:
+                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(16000)
+                wf.writeframes(pcm.tobytes())
+            _last['time'] = _t.strftime('%H:%M:%S')
+            _last['score'] = round(score, 4)
+            _last['wav_b64'] = base64.b64encode(buf.getvalue()).decode()
+            _last['seconds'] = round(len(pcm) / 16000, 2)
+            print(f"[xg-wake] judged {_last['seconds']}s score={score:.3f}", flush=True)
         except Exception:
             import traceback; traceback.print_exc()
             out = json.dumps({'error': 'bad-request'}).encode()

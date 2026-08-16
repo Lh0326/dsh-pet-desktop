@@ -472,11 +472,11 @@ interface WakeService {
   stream: MediaStream
   audioCtx: AudioContext
   analyser: AnalyserNode
-  recorder: MediaRecorder | null
-  /** 预滚缓冲: 待机期间持续录制的最近块(音量门限触发时词头不丢) */
-  ringChunks: Blob[]
-  /** armed期间新产生的块 */
-  chunks: Blob[]
+  proc: ScriptProcessorNode
+  /** PCM环形缓冲(最近~3s): 待机持续收集原始采样,判定时整段直取。
+   *  取代webm块ring——MediaRecorder的块拼接在cluster边界上不可靠
+   *  (实测唤醒判定异常的直接根因),PCM数组拼接零歧义 */
+  pcmRing: Float32Array[]
   timer: number
   state: 'idle' | 'armed' | 'cooldown'
   armedAt: number
@@ -486,9 +486,8 @@ let wake: WakeService | null = null
 const WAKE_VOLUME_THRESHOLD = 0.06    // 待机门限(略高于语音模式VAD,压低误触发)
 const WAKE_ARM_MS = 2200              // 触发后采集窗口(2.2s: '小乖小乖'含起音/换气全程)
 const WAKE_COOLDOWN_MS = 2500         // 判定后冷却(含进入语音模式的过渡)
-/** 唤醒词匹配表(ASR可能的各种写法) */
-/** 唤醒判定改用本地onnx微模型(voice/wake_server.py):
- *  正样本0.98+/负样本0.05-,阈值0.85,不再依赖ASR文本匹配 */
+/** 唤醒判定: 本地onnx微模型(voice/wake_server.py)
+ *  正样本0.98+/负样本0.05-,阈值0.85 */
 const WAKE_SCORE_THRESHOLD = 0.85
 
 async function wakeStart(): Promise<void> {
@@ -500,62 +499,59 @@ async function wakeStart(): Promise<void> {
     const analyser = audioCtx.createAnalyser()
     analyser.fftSize = 512
     src.connect(analyser)
-    wake = { stream, audioCtx, analyser, recorder: null, ringChunks: [], chunks: [], timer: 0, state: 'idle', armedAt: 0, cancelled: false }
-    // 预滚: 待机持续录制,ring保留最近~1.5s(6块x250ms)
-    const ringRec = new MediaRecorder(stream, { mimeType: 'audio/webm' })
-    ringRec.ondataavailable = (e) => {
-      const w = wake
-      if (w === null || e.data.size === 0) return
-      if (w.state === 'idle') {
-        w.ringChunks.push(e.data)
-        if (w.ringChunks.length > 6) w.ringChunks.shift()
-      } else if (w.state === 'armed') {
-        w.chunks.push(e.data)
-      }
-    }
-    ringRec.start(250)
-    const buf = new Float32Array(analyser.fftSize)
-    wake.timer = window.setInterval(async () => {
+
+    // PCM环形缓冲: ScriptProcessor逐帧收原始采样(无容器/拼接问题)
+    const PROC_SIZE = 2048
+    const proc = audioCtx.createScriptProcessor(PROC_SIZE, 1, 1)
+    proc.onaudioprocess = (ev) => {
       const w = wake
       if (w === null) return
-      // 语音模式/播报进行中挂起判定(不消耗ASR,也避免TTS自己唤醒自己)
+      w.pcmRing.push(new Float32Array(ev.inputBuffer.getChannelData(0)))
+      // ring上限~3s(3*16000/2048≈24块)——词头预滚全在
+      while (w.pcmRing.length > 24) w.pcmRing.shift()
+    }
+    src.connect(proc)
+    // ScriptProcessor须连destination才运行;经0增益节点防回环啸叫
+    const mute = audioCtx.createGain(); mute.gain.value = 0
+    proc.connect(mute); mute.connect(audioCtx.destination)
+
+    wake = { stream, audioCtx, analyser, proc, pcmRing: [], timer: 0, state: 'idle', armedAt: 0, cancelled: false }
+    const buf = new Float32Array(analyser.fftSize)
+    wake.timer = window.setInterval(() => {
+      const w = wake
+      if (w === null) return
+      // 语音模式/播报进行中挂起判定(避免TTS自己唤醒自己)
       if (voice !== null || ui.local !== null) { w.state = 'idle'; return }
       analyser.getFloatTimeDomainData(buf)
       let sum = 0
       for (let i = 0; i < buf.length; i++) sum += buf[i]! * buf[i]!
       const rms = Math.sqrt(sum / buf.length)
       const now = performance.now()
-      // TODO(诊断): 每2s把峰值音量刷进气泡(用户可见),修复后移除
+      if (w.state === 'idle' && rms > WAKE_VOLUME_THRESHOLD) {
+        w.state = 'armed'
+        console.log(`[xg-wake] ARMED rms=${rms.toFixed(3)} ringBlocks=${w.pcmRing.length}`)
+        setUi({ bubble: `🎙 采集唤醒音频中(音量${rms.toFixed(3)})…`, bubbleAt: Date.now() })
+        w.armedAt = now
+      } else if (w.state === 'armed') {
+        if (now - w.armedAt >= WAKE_ARM_MS) {
+          // 窗口结束→判定: ring全部PCM(ring持续滚动,词头+词身一体)
+          w.state = 'cooldown'
+          const pcm = new Float32Array(w.pcmRing.length * PROC_SIZE)
+          let off = 0
+          for (const blk of w.pcmRing) { pcm.set(blk, off); off += blk.length }
+          w.pcmRing = []
+          void wakeJudgePcm(pcm)
+          setTimeout(() => { if (wake !== null && wake.state === 'cooldown') wake.state = 'idle' }, WAKE_COOLDOWN_MS)
+        }
+        // 不做"提前静默放弃": PCM ring无成本,让时间窗自然结束
+        // (旧放弃逻辑在句中低音量帧误判,造成armed/idle高频抖动)
+      }
+      // 诊断: 待机峰值每2s刷气泡
       ;(w as unknown as { __peak?: number }).__peak = Math.max((w as unknown as { __peak?: number }).__peak ?? 0, rms)
       if (Math.floor(now / 2000) !== Math.floor((now - 120) / 2000)) {
         const peak = (w as unknown as { __peak?: number }).__peak ?? 0
-        setUi({ bubble: `👂待机 音量峰值 ${peak.toFixed(3)} / 门限 ${WAKE_VOLUME_THRESHOLD} ${peak > WAKE_VOLUME_THRESHOLD ? '✓能触发' : '✗低于门限'}`, bubbleAt: Date.now() })
+        if (w.state === 'idle') setUi({ bubble: `👂待机 音量峰值 ${peak.toFixed(3)} / 门限 ${WAKE_VOLUME_THRESHOLD} ${peak > WAKE_VOLUME_THRESHOLD ? '✓能触发' : '✗低于门限'}`, bubbleAt: Date.now() })
         ;(w as unknown as { __peak?: number }).__peak = 0
-      }
-      if (w.state === 'idle' && rms > WAKE_VOLUME_THRESHOLD) {
-        // 疑似说话→armed。词头已在预滚缓冲里(120ms轮询的起音延迟不再吃词头)
-        w.state = 'armed'
-        console.log(`[xg-wake] ARMED rms=${rms.toFixed(3)} ring=${w.ringChunks.length}块`)
-        setUi({ bubble: `🎙 采集唤醒音频中(音量${rms.toFixed(3)})…`, bubbleAt: Date.now() })
-        w.armedAt = now
-        w.chunks = []
-      } else if (w.state === 'armed') {
-        if (now - w.armedAt >= WAKE_ARM_MS) {
-          // 采集窗口结束→判定: 预滚ring(词头)+armed块(词身)拼接
-          w.state = 'cooldown'
-          const all = [...w.ringChunks, ...w.chunks]
-          w.ringChunks = []; w.chunks = []
-          if (all.length > 0) {
-            void wakeJudge(new Blob(all, { type: 'audio/webm' }))
-          }
-          setTimeout(() => { if (wake !== null && wake.state === 'cooldown') wake.state = 'idle' }, WAKE_COOLDOWN_MS)
-        } else if (rms < WAKE_VOLUME_THRESHOLD * 0.15 && now - w.armedAt > 1200) {
-          // 明确长静默(噪声误触后的真安静)→放弃。放宽到0.15x/1.2s:
-          // 之前0.4x/0.6s把"小乖小乖"的字间停顿误判为结束,没说完就回待机
-          w.state = 'cooldown'
-          w.ringChunks = []; w.chunks = []
-          setTimeout(() => { if (wake !== null && wake.state === 'cooldown') wake.state = 'idle' }, 800)
-        }
       }
     }, 120)
     setUi({ bubble: '👂 唤醒待机中：说"小乖小乖"', bubbleAt: Date.now() })
@@ -565,33 +561,54 @@ async function wakeStart(): Promise<void> {
   }
 }
 
+/** PCM(Float32 16k)直接编码wav base64——无webm容器/解码/拼接环节 */
+function pcmToWavBase64(pcm: Float32Array): string {
+  const len = pcm.length
+  const wav = new ArrayBuffer(44 + len * 2)
+  const view = new DataView(wav)
+  const w = (off: number, str: string) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)) }
+  w(0, 'RIFF'); view.setUint32(4, 36 + len * 2, true); w(8, 'WAVE')
+  w(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true)
+  view.setUint32(24, 16000, true); view.setUint32(28, 32000, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true)
+  w(36, 'data'); view.setUint32(40, len * 2, true)
+  for (let i = 0; i < len; i++) view.setInt16(44 + i * 2, Math.max(-32768, Math.min(32767, pcm[i]! * 32767)), true)
+  const bytes = new Uint8Array(wav)
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192))
+  return btoa(bin)
+}
+
+async function wakeJudgePcm(pcm: Float32Array): Promise<void> {
+  console.log(`[xg-wake] JUDGE-START pcm=${(pcm.length / 16000).toFixed(2)}s`)
+  setUi({ bubble: `📦 判定音频 ${(pcm.length / 16000).toFixed(1)}s 提交中…`, bubbleAt: Date.now() })
+  if (pcm.length < 8000) { console.log('[xg-wake] drop: too short'); return }
+  try {
+    const wavB64 = pcmToWavBase64(pcm)
+    const r = await fetch('/api/xiaoguai/voice/wake', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ audio_wav16k_mono: wavB64 }),
+    })
+    console.log(`[xg-wake] fetch ${r.status}`)
+    if (!r.ok) { setUi({ bubble: `⚠ 唤醒接口 ${r.status}`, bubbleAt: Date.now() }); return }
+    const { score } = (await r.json()) as { score?: number }
+    console.log(`[xg-wake] score=${score ?? -1}`)
+    setUi({ bubble: `🔍 唤醒打分 ${((score ?? 0) * 100).toFixed(0)} 分(阈值85)`, bubbleAt: Date.now() })
+    if ((score ?? 0) > WAKE_SCORE_THRESHOLD) {
+      setUi({ bubble: '我在听！', bubbleAt: Date.now() })
+      void voiceStart()
+    }
+  } catch (e) { console.log('[xg-wake] JUDGE-ERR', e); setUi({ bubble: '⚠ 唤醒判定异常', bubbleAt: Date.now() }) }
+}
+
 function wakeStop(): void {
   const w = wake
   wake = null
   if (w === null) return
   window.clearInterval(w.timer)
-  if (w.recorder !== null && w.recorder.state !== 'inactive') { w.recorder.onstop = () => undefined; w.recorder.stop() }
+  w.proc.onaudioprocess = null
+  w.proc.disconnect()
   w.stream.getTracks().forEach(t => t.stop())
   void w.audioCtx.close()
-}
-
-async function wakeJudge(blob: Blob): Promise<void> {
-  if (blob.size < 3000) return   // 太短
-  try {
-    const wavB64 = await blobToWavBase64(blob)
-    const r = await fetch('/api/xiaoguai/voice/wake', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ audio_wav16k_mono: wavB64 }),
-    })
-    if (!r.ok) { console.log('[xg-wake] wake api not ok'); return }
-    const { score } = (await r.json()) as { score?: number }
-    console.log(`[xg-wake] score=${score ?? -1}`)
-    if ((score ?? 0) > WAKE_SCORE_THRESHOLD) {
-      // 命中! 进入语音模式
-      setUi({ bubble: '我在听！', bubbleAt: Date.now() })
-      void voiceStart()
-    }
-  } catch { /* 判定失败=当作未命中 */ }
 }
 
 /** 面板内语音区：声纹波形 + 说话/取消按钮 */
