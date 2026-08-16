@@ -133,6 +133,7 @@ function assetRoutes(packageRoot) {
   }));
 }
 var ASR_URL = "http://127.0.0.1:9340/asr";
+var WAKE_URL = "http://127.0.0.1:9341/wake";
 async function asrRecent() {
   try {
     const resp = await fetch("http://127.0.0.1:9340/recent", { signal: AbortSignal.timeout(3e3) });
@@ -140,6 +141,18 @@ async function asrRecent() {
   } catch {
   }
   return { entries: [] };
+}
+async function bridgeWake(body) {
+  const audio = body.audio_wav16k_mono;
+  if (typeof audio !== "string") throw new Error("invalid-audio");
+  const resp = await fetch(WAKE_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ audio_wav16k_mono: audio }),
+    signal: AbortSignal.timeout(15e3)
+  });
+  if (!resp.ok) throw new Error(`wake-upstream-${resp.status}`);
+  return resp.json();
 }
 async function bridgeAsr(body) {
   const audioB64 = body.audio_wav;
@@ -202,6 +215,7 @@ function makeXiaoguaiRoutes(deps) {
     getRoute(`${XG_API_PREFIX}/diag/asr`, () => asrRecent()),
     postRoute(`${XG_API_PREFIX}/voice/asr`, bridgeAsr, 20 * 1024 * 1024),
     // wav base64 可达数MB
+    postRoute(`${XG_API_PREFIX}/voice/wake`, bridgeWake, 20 * 1024 * 1024),
     postRoute(`${XG_API_PREFIX}/voice/tts`, bridgeTts),
     postRoute(`${XG_API_PREFIX}/voice/send`, (body) => {
       const text = body.text;

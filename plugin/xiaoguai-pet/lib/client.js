@@ -367,7 +367,7 @@ var wake = null;
 var WAKE_VOLUME_THRESHOLD = 0.06;
 var WAKE_ARM_MS = 2200;
 var WAKE_COOLDOWN_MS = 2500;
-var WAKE_PATTERNS = [/小乖/, /小怪/, /小乘坐/, /肖怪/, /^乖$/, /小乖同学/, /晓乖/];
+var WAKE_SCORE_THRESHOLD = 0.85;
 async function wakeStart() {
   if (wake !== null) return;
   try {
@@ -463,23 +463,18 @@ async function wakeJudge(blob) {
   if (blob.size < 3e3) return;
   try {
     const wavB64 = await blobToWavBase64(blob);
-    const r = await fetch("/api/xiaoguai/voice/asr", {
+    const r = await fetch("/api/xiaoguai/voice/wake", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ audio_wav: wavB64 })
+      body: JSON.stringify({ audio_wav16k_mono: wavB64 })
     });
     if (!r.ok) {
-      console.log("[xg-wake] ASR not ok");
+      console.log("[xg-wake] wake api not ok");
       return;
     }
-    const text = (await r.json()).text ?? "";
-    console.log(`[xg-wake] JUDGE text="${text}" len=${text.length}`);
-    setUi({ bubble: `\u{1F50E} \u5524\u9192\u5224\u5B9A\uFF1A"${text}" ${WAKE_PATTERNS.some((re) => re.test(text)) ? "\u2713\u547D\u4E2D" : "\u2717\u672A\u4E2D"}`, bubbleAt: Date.now() });
-    if (text.length > 16) {
-      console.log("[xg-wake] drop: too long");
-      return;
-    }
-    if (WAKE_PATTERNS.some((re) => re.test(text))) {
+    const { score } = await r.json();
+    console.log(`[xg-wake] score=${score ?? -1}`);
+    if ((score ?? 0) > WAKE_SCORE_THRESHOLD) {
       setUi({ bubble: "\u6211\u5728\u542C\uFF01", bubbleAt: Date.now() });
       void voiceStart();
     }

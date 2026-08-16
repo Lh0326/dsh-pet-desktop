@@ -446,9 +446,9 @@ const WAKE_VOLUME_THRESHOLD = 0.06    // 待机门限(略高于语音模式VAD,�
 const WAKE_ARM_MS = 2200              // 触发后采集窗口(2.2s: '小乖小乖'含起音/换气全程)
 const WAKE_COOLDOWN_MS = 2500         // 判定后冷却(含进入语音模式的过渡)
 /** 唤醒词匹配表(ASR可能的各种写法) */
-const WAKE_PATTERNS = [/小乖/, /小怪/, /小乘坐/, /肖怪/, /^乖$/, /小乖同学/, /晓乖/]
-// 注: 实测SeCo对"小乖小乖"会出"小乖3乖"等变体——匹配以"小乖"子串为核心,
-// 佐以常见同音变体;长度≤12字已排除正常长句
+/** 唤醒判定改用本地onnx微模型(voice/wake_server.py):
+ *  正样本0.98+/负样本0.05-,阈值0.85,不再依赖ASR文本匹配 */
+const WAKE_SCORE_THRESHOLD = 0.85
 
 async function wakeStart(): Promise<void> {
   if (wake !== null) return
@@ -540,16 +540,14 @@ async function wakeJudge(blob: Blob): Promise<void> {
   if (blob.size < 3000) return   // 太短
   try {
     const wavB64 = await blobToWavBase64(blob)
-    const r = await fetch('/api/xiaoguai/voice/asr', {
+    const r = await fetch('/api/xiaoguai/voice/wake', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ audio_wav: wavB64 }),
+      body: JSON.stringify({ audio_wav16k_mono: wavB64 }),
     })
-    if (!r.ok) { console.log('[xg-wake] ASR not ok'); return }
-    const text = ((await r.json()) as { text?: string }).text ?? ''
-    console.log(`[xg-wake] JUDGE text="${text}" len=${text.length}`)
-    setUi({ bubble: `🔎 唤醒判定："${text}" ${WAKE_PATTERNS.some(re => re.test(text)) ? '✓命中' : '✗未中'}`, bubbleAt: Date.now() })
-    if (text.length > 16) { console.log('[xg-wake] drop: too long'); return }
-    if (WAKE_PATTERNS.some(re => re.test(text))) {
+    if (!r.ok) { console.log('[xg-wake] wake api not ok'); return }
+    const { score } = (await r.json()) as { score?: number }
+    console.log(`[xg-wake] score=${score ?? -1}`)
+    if ((score ?? 0) > WAKE_SCORE_THRESHOLD) {
       // 命中! 进入语音模式
       setUi({ bubble: '我在听！', bubbleAt: Date.now() })
       void voiceStart()

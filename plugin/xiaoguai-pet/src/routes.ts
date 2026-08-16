@@ -128,6 +128,7 @@ import { tmpdir } from 'node:os'
 import { join as pathJoin } from 'node:path'
 
 const ASR_URL = 'http://127.0.0.1:9340/asr'
+const WAKE_URL = 'http://127.0.0.1:9341/wake'
 
 /** 诊断: ASR服务端最近识别记录(唤醒排查数据源) */
 async function asrRecent(): Promise<unknown> {
@@ -136,6 +137,20 @@ async function asrRecent(): Promise<unknown> {
     if (resp.ok) return resp.json()
   } catch { /* 服务不支持时返回空 */ }
   return { entries: [] }
+}
+
+/** 唤醒词判定桥接(本地onnx微模型,CPU<1%): {audio_wav16k_mono}→{score} */
+async function bridgeWake(body: Record<string, unknown>): Promise<unknown> {
+  const audio = body.audio_wav16k_mono
+  if (typeof audio !== 'string') throw new Error('invalid-audio')
+  const resp = await fetch(WAKE_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ audio_wav16k_mono: audio }),
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (!resp.ok) throw new Error(`wake-upstream-${resp.status}`)
+  return resp.json()
 }
 
 async function bridgeAsr(body: Record<string, unknown>): Promise<unknown> {
@@ -204,6 +219,7 @@ export function makeXiaoguaiRoutes(deps: { service: XiaoguaiService; packageRoot
     getRoute(`${XG_API_PREFIX}/diag`, () => ({ atlasHits: atlasHits(), time: Date.now() })),
     getRoute(`${XG_API_PREFIX}/diag/asr`, () => asrRecent()),
     postRoute(`${XG_API_PREFIX}/voice/asr`, bridgeAsr, 20 * 1024 * 1024),  // wav base64 可达数MB
+    postRoute(`${XG_API_PREFIX}/voice/wake`, bridgeWake, 20 * 1024 * 1024),
     postRoute(`${XG_API_PREFIX}/voice/tts`, bridgeTts),
     postRoute(`${XG_API_PREFIX}/voice/send`, (body) => {
       const text = body.text
