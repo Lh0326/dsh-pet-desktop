@@ -365,7 +365,7 @@ async function blobToWavBase64(blob) {
 }
 var wake = null;
 var WAKE_VOLUME_THRESHOLD = 0.06;
-var WAKE_ARM_MS = 1600;
+var WAKE_ARM_MS = 2200;
 var WAKE_COOLDOWN_MS = 2500;
 var WAKE_PATTERNS = [/小乖/, /小怪/, /小乘坐/, /肖怪/, /^乖$/, /小乖同学/, /晓乖/];
 async function wakeStart() {
@@ -391,8 +391,16 @@ async function wakeStart() {
       for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
       const rms = Math.sqrt(sum / buf.length);
       const now = performance.now();
+      w.__peak = Math.max(w.__peak ?? 0, rms);
+      if (Math.floor(now / 2e3) !== Math.floor((now - 120) / 2e3)) {
+        const peak = w.__peak ?? 0;
+        setUi({ bubble: `\u{1F442}\u5F85\u673A \u97F3\u91CF\u5CF0\u503C ${peak.toFixed(3)} / \u95E8\u9650 ${WAKE_VOLUME_THRESHOLD} ${peak > WAKE_VOLUME_THRESHOLD ? "\u2713\u80FD\u89E6\u53D1" : "\u2717\u4F4E\u4E8E\u95E8\u9650"}`, bubbleAt: Date.now() });
+        w.__peak = 0;
+      }
       if (w.state === "idle" && rms > WAKE_VOLUME_THRESHOLD) {
         w.state = "armed";
+        console.log(`[xg-wake] ARMED rms=${rms.toFixed(3)}`);
+        setUi({ bubble: `\u{1F399} \u91C7\u96C6\u5524\u9192\u97F3\u9891\u4E2D(\u97F3\u91CF${rms.toFixed(3)})\u2026`, bubbleAt: Date.now() });
         w.armedAt = now;
         w.chunks = [];
         try {
@@ -420,7 +428,7 @@ async function wakeStart() {
           setTimeout(() => {
             if (wake !== null && wake.state === "cooldown") wake.state = "idle";
           }, WAKE_COOLDOWN_MS);
-        } else if (rms < WAKE_VOLUME_THRESHOLD * 0.4 && now - w.armedAt > 600) {
+        } else if (rms < WAKE_VOLUME_THRESHOLD * 0.15 && now - w.armedAt > 1200) {
           const rec = w.recorder;
           w.recorder = null;
           w.state = "cooldown";
@@ -460,9 +468,17 @@ async function wakeJudge(blob) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ audio_wav: wavB64 })
     });
-    if (!r.ok) return;
+    if (!r.ok) {
+      console.log("[xg-wake] ASR not ok");
+      return;
+    }
     const text = (await r.json()).text ?? "";
-    if (text.length > 12) return;
+    console.log(`[xg-wake] JUDGE text="${text}" len=${text.length}`);
+    setUi({ bubble: `\u{1F50E} \u5524\u9192\u5224\u5B9A\uFF1A"${text}" ${WAKE_PATTERNS.some((re) => re.test(text)) ? "\u2713\u547D\u4E2D" : "\u2717\u672A\u4E2D"}`, bubbleAt: Date.now() });
+    if (text.length > 16) {
+      console.log("[xg-wake] drop: too long");
+      return;
+    }
     if (WAKE_PATTERNS.some((re) => re.test(text))) {
       setUi({ bubble: "\u6211\u5728\u542C\uFF01", bubbleAt: Date.now() });
       void voiceStart();

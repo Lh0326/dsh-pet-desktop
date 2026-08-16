@@ -443,7 +443,7 @@ interface WakeService {
 }
 let wake: WakeService | null = null
 const WAKE_VOLUME_THRESHOLD = 0.06    // 待机门限(略高于语音模式VAD,压低误触发)
-const WAKE_ARM_MS = 1600              // 触发后采集窗口
+const WAKE_ARM_MS = 2200              // 触发后采集窗口(2.2s: '小乖小乖'含起音/换气全程)
 const WAKE_COOLDOWN_MS = 2500         // 判定后冷却(含进入语音模式的过渡)
 /** 唤醒词匹配表(ASR可能的各种写法) */
 const WAKE_PATTERNS = [/小乖/, /小怪/, /小乘坐/, /肖怪/, /^乖$/, /小乖同学/, /晓乖/]
@@ -471,9 +471,19 @@ async function wakeStart(): Promise<void> {
       for (let i = 0; i < buf.length; i++) sum += buf[i]! * buf[i]!
       const rms = Math.sqrt(sum / buf.length)
       const now = performance.now()
+      // TODO(诊断): 每2s把峰值音量刷进气泡(用户可见),修复后移除
+      ;(w as unknown as { __peak?: number }).__peak = Math.max((w as unknown as { __peak?: number }).__peak ?? 0, rms)
+      if (Math.floor(now / 2000) !== Math.floor((now - 120) / 2000)) {
+        const peak = (w as unknown as { __peak?: number }).__peak ?? 0
+        setUi({ bubble: `👂待机 音量峰值 ${peak.toFixed(3)} / 门限 ${WAKE_VOLUME_THRESHOLD} ${peak > WAKE_VOLUME_THRESHOLD ? '✓能触发' : '✗低于门限'}`, bubbleAt: Date.now() })
+        ;(w as unknown as { __peak?: number }).__peak = 0
+      }
       if (w.state === 'idle' && rms > WAKE_VOLUME_THRESHOLD) {
         // 疑似说话→armed: 开始录音
         w.state = 'armed'
+        // TODO(诊断): 唤醒链路排查用,修复后移除
+        console.log(`[xg-wake] ARMED rms=${rms.toFixed(3)}`)
+        setUi({ bubble: `🎙 采集唤醒音频中(音量${rms.toFixed(3)})…`, bubbleAt: Date.now() })
         w.armedAt = now
         w.chunks = []
         try {
@@ -495,8 +505,9 @@ async function wakeStart(): Promise<void> {
             void wakeJudge(blob)
           }
           setTimeout(() => { if (wake !== null && wake.state === 'cooldown') wake.state = 'idle' }, WAKE_COOLDOWN_MS)
-        } else if (rms < WAKE_VOLUME_THRESHOLD * 0.4 && now - w.armedAt > 600) {
-          // 提前转静(短促噪声)→放弃
+        } else if (rms < WAKE_VOLUME_THRESHOLD * 0.15 && now - w.armedAt > 1200) {
+          // 明确长静默(噪声误触后的真安静)→放弃。放宽到0.15x/1.2s:
+          // 之前0.4x/0.6s把"小乖小乖"的字间停顿误判为结束,没说完就回待机
           const rec = w.recorder
           w.recorder = null
           w.state = 'cooldown'
@@ -533,9 +544,11 @@ async function wakeJudge(blob: Blob): Promise<void> {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ audio_wav: wavB64 }),
     })
-    if (!r.ok) return
+    if (!r.ok) { console.log('[xg-wake] ASR not ok'); return }
     const text = ((await r.json()) as { text?: string }).text ?? ''
-    if (text.length > 12) return   // 长句=正常对话,不是唤醒
+    console.log(`[xg-wake] JUDGE text="${text}" len=${text.length}`)
+    setUi({ bubble: `🔎 唤醒判定："${text}" ${WAKE_PATTERNS.some(re => re.test(text)) ? '✓命中' : '✗未中'}`, bubbleAt: Date.now() })
+    if (text.length > 16) { console.log('[xg-wake] drop: too long'); return }
     if (WAKE_PATTERNS.some(re => re.test(text))) {
       // 命中! 进入语音模式
       setUi({ bubble: '我在听！', bubbleAt: Date.now() })

@@ -26,6 +26,11 @@ model = AutoModel(
 )
 print('[xg-asr] model ready', flush=True)
 
+# 诊断: 最近20条识别结果(唤醒排查用,经/diag/asr暴露)
+__recent = []
+def recent_texts():
+    return __recent[-20:]
+
 def clean(text: str) -> str:
     # paraformer输出带字间空格 -> 中文邻接的空格删除(英文单词间距保留)
     out = []
@@ -56,6 +61,8 @@ class H(BaseHTTPRequestHandler):
             try:
                 res = model.generate(input=tmp, cache={}, hotword=HOTWORD_PATH)
                 text = clean(res[0]['text']) if res else ''
+                __recent.append({'t': __import__('time').strftime('%H:%M:%S'), 'text': text, 'bytes': len(raw)})
+                del __recent[:-20]
             except Exception:
                 import traceback; traceback.print_exc()
                 text = ''
