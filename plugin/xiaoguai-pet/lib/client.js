@@ -32,7 +32,6 @@ __export(client_exports, {
 module.exports = __toCommonJS(client_exports);
 var import_react = require("react");
 var import_client = require("react-dom/client");
-var import_react_dom = require("react-dom");
 var API = {
   state: () => fetch("/api/xiaoguai/state").then((r) => r.json()),
   interact: (kind, extra) => fetch("/api/xiaoguai/interact", {
@@ -80,15 +79,18 @@ var ALL_ANIMS = ["idle", "thinking", "working", "confirm", "done", "listening", 
 function preloadAll() {
   for (const a of ALL_ANIMS) void ensureDecoded(a);
 }
-var instance = null;
+var WINDOW_KEY = "__xiaoguaiPetInstance";
 function apply() {
-  if (instance !== null) {
-    instance.alive = false;
-    window.clearInterval(instance.timer);
+  const prev = window[WINDOW_KEY];
+  if (prev !== void 0) {
+    prev.alive = false;
+    window.clearInterval(prev.timer);
+    prev.dispose();
   }
   document.querySelectorAll("div[data-xiaoguai-pet-root]").forEach((el) => el.remove());
-  const me = { alive: true, timer: 0 };
-  instance = me;
+  const me = { alive: true, timer: 0, dispose: () => {
+  } };
+  window[WINDOW_KEY] = me;
   void loadMetas();
   preloadAll();
   const container = document.createElement("div");
@@ -107,12 +109,20 @@ function apply() {
   me.timer = window.setInterval(() => {
     if (me.alive && document.visibilityState === "visible") poll();
   }, 800);
+  me.dispose = () => {
+    try {
+      root.unmount();
+    } catch {
+    }
+    container.remove();
+  };
   return () => {
     me.alive = false;
     window.clearInterval(me.timer);
-    root.unmount();
-    container.remove();
-    if (instance === me) instance = null;
+    me.dispose();
+    if (window[WINDOW_KEY] === me) {
+      delete window[WINDOW_KEY];
+    }
   };
 }
 function XiaoguaiEntry() {
@@ -416,7 +426,7 @@ function XiaoguaiFloat() {
       )
     )
   );
-  return (0, import_react_dom.createPortal)(float, document.body);
+  return float;
 }
 
 		return module.exports;

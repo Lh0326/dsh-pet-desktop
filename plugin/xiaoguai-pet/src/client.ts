@@ -11,7 +11,6 @@
  */
 import { createElement, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement } from 'react'
 import { createRoot } from 'react-dom/client'
-import { createPortal } from 'react-dom'
 
 type Animation = 'idle' | 'thinking' | 'working' | 'confirm' | 'done'
   | 'listening' | 'speaking' | 'pet-drag' | 'pet-pat' | 'pet-feed'
@@ -101,22 +100,27 @@ function ensureDecoded(a: Animation): Promise<void> {
 const ALL_ANIMS: Animation[] = ['idle','thinking','working','confirm','done','listening','speaking','pet-drag','pet-pat','pet-feed']
 function preloadAll(): void { for (const a of ALL_ANIMS) void ensureDecoded(a) }
 
-/** 单例守护：loader 可能执行 factory 两次（页面 reload/插件重启用期间旧实例未及 dispose），
- *  两次 apply 会产生两套 handler → 每个指针事件被处理两遍 → 拖拽位移×2（实测实锤）。
- *  用窗口级令牌：新 apply 存活，旧 apply 的 interval/poll 全部自杀。 */
-interface PetInstance { alive: boolean; timer: number }
-let instance: PetInstance | null = null
+/** 单例守护（跨 bundle 强化版）：
+ *  dsh 重启/热重载会加载新 client.js bundle——新 bundle 的模块级变量是全新的，
+ *  看不到旧 bundle 的实例（模块级令牌失效 = 修复后一拖拽旧分身复活的根因）。
+ *  令牌必须挂在 window 上（跨 bundle 唯一共享的存储），新 apply 到来时：
+ *  1. 杀旧实例的轮询（alive=false + clearInterval）
+ *  2. unmount 旧 React root（持有 window 引用才能做到）
+ *  3. 移除旧容器 DOM */
+interface PetInstance { alive: boolean; timer: number; dispose: () => void }
+const WINDOW_KEY = '__xiaoguaiPetInstance'
 
 export function apply(): (() => void) | void {
-  // 1) 干掉旧实例（含其 DOM 与轮询）
-  if (instance !== null) {
-    instance.alive = false
-    window.clearInterval(instance.timer)
+  const prev = (window as unknown as Record<string, PetInstance | undefined>)[WINDOW_KEY]
+  if (prev !== undefined) {
+    prev.alive = false
+    window.clearInterval(prev.timer)
+    prev.dispose()
   }
   document.querySelectorAll('div[data-xiaoguai-pet-root]').forEach(el => el.remove())
 
-  const me: PetInstance = { alive: true, timer: 0 }
-  instance = me
+  const me: PetInstance = { alive: true, timer: 0, dispose: () => {} }
+  ;(window as unknown as Record<string, PetInstance | undefined>)[WINDOW_KEY] = me
   void loadMetas()
   preloadAll()
 
@@ -137,12 +141,17 @@ export function apply(): (() => void) | void {
     if (me.alive && document.visibilityState === 'visible') poll()
   }, 800)
 
+  me.dispose = () => {
+    try { root.unmount() } catch { /* 已卸载 */ }
+    container.remove()
+  }
   return () => {
     me.alive = false
     window.clearInterval(me.timer)
-    root.unmount()
-    container.remove()
-    if (instance === me) instance = null
+    me.dispose()
+    if ((window as unknown as Record<string, PetInstance | undefined>)[WINDOW_KEY] === me) {
+      delete (window as unknown as Record<string, PetInstance | undefined>)[WINDOW_KEY]
+    }
   }
 }
 
@@ -432,5 +441,8 @@ function XiaoguaiFloat(): ReactElement {
       ),
     ),
   )
-  return createPortal(float, document.body)
+  // 不用 createPortal：portal 节点挂在 document.body 上，即使插件容器被
+  // remove 它仍存活（旧 bundle 的分身杀不死的原因）。
+  // 本组件本来就渲染在 body 下的专属容器里，直接返回元素即可。
+  return float
 }
