@@ -397,7 +397,6 @@ var wake = null;
 var WAKE_VOLUME_THRESHOLD = 0.06;
 var WAKE_ARM_MS = 2200;
 var WAKE_COOLDOWN_MS = 2500;
-var WAKE_SCORE_THRESHOLD = 0.85;
 async function wakeStart() {
   if (wake !== null) return;
   try {
@@ -503,20 +502,20 @@ async function wakeJudgePcm(pcm) {
   }
   try {
     const wavB64 = pcmToWavBase64(pcm);
-    const r = await fetch("/api/xiaoguai/voice/wake", {
+    const r = await fetch("/api/xiaoguai/voice/asr", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ audio_wav16k_mono: wavB64 })
+      body: JSON.stringify({ audio_wav: wavB64 })
     });
-    console.log(`[xg-wake] fetch ${r.status}`);
+    console.log(`[xg-wake] asr fetch ${r.status}`);
     if (!r.ok) {
       setUi({ bubble: `\u26A0 \u5524\u9192\u63A5\u53E3 ${r.status}`, bubbleAt: Date.now() });
       return;
     }
-    const { score } = await r.json();
-    console.log(`[xg-wake] score=${score ?? -1}`);
-    setUi({ bubble: `\u{1F50D} \u5524\u9192\u6253\u5206 ${((score ?? 0) * 100).toFixed(0)} \u5206(\u9608\u503C85)`, bubbleAt: Date.now() });
-    if ((score ?? 0) > WAKE_SCORE_THRESHOLD) {
+    const { text } = await r.json();
+    console.log(`[xg-wake] heard="${text ?? ""}"`);
+    setUi({ bubble: `\u{1F50D} \u542C\u5230\uFF1A"${(text ?? "").slice(0, 12)}"`, bubbleAt: Date.now() });
+    if ((text ?? "").length <= 16 && /小乖|小怪|晓乖|小乘/.test(text ?? "")) {
       setUi({ bubble: "\u6211\u5728\u542C\uFF01", bubbleAt: Date.now() });
       void voiceStart();
     }

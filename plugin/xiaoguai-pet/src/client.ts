@@ -583,17 +583,20 @@ async function wakeJudgePcm(pcm: Float32Array): Promise<void> {
   setUi({ bubble: `📦 判定音频 ${(pcm.length / 16000).toFixed(1)}s 提交中…`, bubbleAt: Date.now() })
   if (pcm.length < 8000) { console.log('[xg-wake] drop: too short'); return }
   try {
+    // STT文字匹配路线: SeCo-Paraformer在海量人声上训练,天生认任何说话人
+    // (实测: 用户真声'小乖小乖'识别为'小乖3乖'完全正确)。
+    // 旧onnx模型只学过edge-tts合成音色,对真实人声0.002分——弃用。
     const wavB64 = pcmToWavBase64(pcm)
-    const r = await fetch('/api/xiaoguai/voice/wake', {
+    const r = await fetch('/api/xiaoguai/voice/asr', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ audio_wav16k_mono: wavB64 }),
+      body: JSON.stringify({ audio_wav: wavB64 }),
     })
-    console.log(`[xg-wake] fetch ${r.status}`)
+    console.log(`[xg-wake] asr fetch ${r.status}`)
     if (!r.ok) { setUi({ bubble: `⚠ 唤醒接口 ${r.status}`, bubbleAt: Date.now() }); return }
-    const { score } = (await r.json()) as { score?: number }
-    console.log(`[xg-wake] score=${score ?? -1}`)
-    setUi({ bubble: `🔍 唤醒打分 ${((score ?? 0) * 100).toFixed(0)} 分(阈值85)`, bubbleAt: Date.now() })
-    if ((score ?? 0) > WAKE_SCORE_THRESHOLD) {
+    const { text } = (await r.json()) as { text?: string }
+    console.log(`[xg-wake] heard="${text ?? ''}"`)
+    setUi({ bubble: `🔍 听到："${(text ?? '').slice(0, 12)}"`, bubbleAt: Date.now() })
+    if ((text ?? '').length <= 16 && /小乖|小怪|晓乖|小乘/.test(text ?? '')) {
       setUi({ bubble: '我在听！', bubbleAt: Date.now() })
       void voiceStart()
     }
