@@ -40,13 +40,10 @@ var API = {
     body: JSON.stringify({ kind, ...extra })
   }).then((r) => r.json())
 };
-var metas = /* @__PURE__ */ new Map();
+var atlas = null;
 async function loadMetas() {
-  const states = ["idle", "thinking", "working", "confirm", "done", "listening", "speaking", "pet-drag", "pet-pat", "pet-feed"];
-  await Promise.all(states.map(async (s) => {
-    const r = await fetch(`/xiaoguai/assets/${s}.meta.json`);
-    if (r.ok) metas.set(s, await r.json());
-  }));
+  const r = await fetch("/xiaoguai/assets/atlas.manifest.json");
+  if (r.ok) atlas = await r.json();
 }
 function isTransient(a) {
   return a === "pet-pat" || a === "pet-feed" || a === "done";
@@ -64,20 +61,17 @@ function subscribe(l) {
   };
 }
 var inject = [];
-var decoded = /* @__PURE__ */ new Map();
-function ensureDecoded(a) {
-  let p = decoded.get(a);
-  if (p === void 0) {
+var atlasDecoded = null;
+function ensureDecoded(_a) {
+  if (atlasDecoded === null) {
     const img = new Image();
-    img.src = `/xiaoguai/assets/${a}_spritesheet.webp`;
-    p = img.decode().then(() => void 0).catch(() => void 0);
-    decoded.set(a, p);
+    img.src = "/xiaoguai/assets/atlas.webp";
+    atlasDecoded = img.decode().then(() => void 0).catch(() => void 0);
   }
-  return p;
+  return atlasDecoded;
 }
-var ALL_ANIMS = ["idle", "thinking", "working", "confirm", "done", "listening", "speaking", "pet-drag", "pet-pat", "pet-feed"];
 function preloadAll() {
-  for (const a of ALL_ANIMS) void ensureDecoded(a);
+  void ensureDecoded("idle");
 }
 var WINDOW_KEY = "__xiaoguaiPetInstance";
 function apply() {
@@ -204,10 +198,11 @@ function XiaoguaiFloat() {
     }
   }, [animation]);
   (0, import_react.useLayoutEffect)(() => {
+    const row = atlas?.rows[animation] ?? 0;
     if (spriteRef.current !== null) {
-      spriteRef.current.style.backgroundPosition = "0px 0";
+      spriteRef.current.style.backgroundPosition = `0px -${row * display.size}px`;
     }
-  }, [animation]);
+  }, [animation, display.size]);
   (0, import_react.useEffect)(() => {
     let raf = 0;
     let last = performance.now();
@@ -215,7 +210,9 @@ function XiaoguaiFloat() {
       const delta = ts - last;
       last = ts;
       const anim = animRef.current;
-      const meta = metas.get(anim) ?? { frameSize: 256, frameCount: 1, fps: 30 };
+      const fps = atlas?.fps ?? 30;
+      const frameCount = atlas?.frames[anim] ?? 1;
+      const row = atlas?.rows[anim] ?? 0;
       const st = frameRef.current;
       if (st.anim !== anim) {
         st.anim = anim;
@@ -225,24 +222,24 @@ function XiaoguaiFloat() {
       }
       if (!st.finished) {
         st.elapsed += delta;
-        const frameMs = 1e3 / meta.fps;
+        const frameMs = 1e3 / fps;
         if (isTransient(anim)) {
-          while (st.elapsed >= frameMs && st.index < meta.frameCount - 1) {
+          while (st.elapsed >= frameMs && st.index < frameCount - 1) {
             st.elapsed -= frameMs;
             st.index += 1;
           }
           if (st.elapsed >= frameMs) {
-            st.index = meta.frameCount - 1;
+            st.index = frameCount - 1;
             st.finished = true;
             if (anim !== "pet-drag") setUi({ local: null });
           }
         } else {
-          const phase = st.elapsed % (frameMs * meta.frameCount);
+          const phase = st.elapsed % (frameMs * frameCount);
           st.index = Math.floor(phase / frameMs);
         }
       }
       if (spriteRef.current !== null) {
-        spriteRef.current.style.backgroundPosition = `-${st.index * display.size}px 0`;
+        spriteRef.current.style.backgroundPosition = `-${st.index * display.size}px -${row * display.size}px`;
       }
       raf = requestAnimationFrame(tick);
     };
@@ -295,10 +292,11 @@ function XiaoguaiFloat() {
       style: {
         width: size,
         height: size,
-        backgroundImage: `url(/xiaoguai/assets/${animation}_spritesheet.webp)`,
-        backgroundSize: `${size * (metas.get(animation)?.frameCount ?? 1)}px ${size}px`,
+        // 单图集: backgroundImage/Size 恒定不随动画变(动画只改position)
+        backgroundImage: "url(/xiaoguai/assets/atlas.webp)",
+        backgroundSize: `${size * (atlas ? Math.max(...Object.values(atlas.frames)) : 34)}px ${size * (atlas ? Object.keys(atlas.rows).length : 10)}px`,
         backgroundRepeat: "no-repeat",
-        // backgroundPosition 同理不归 React 管（rAF 直写）
+        // backgroundPosition 不归 React 管（rAF 直写,x=帧列y=状态行）
         imageRendering: "auto",
         touchAction: "none",
         cursor: dragRef.current === null ? "grab" : "grabbing"

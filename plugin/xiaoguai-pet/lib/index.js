@@ -20,6 +20,10 @@ var ASSET_STATES = [
   "pet-pat",
   "pet-feed"
 ];
+var ASSET_EXTRA = [
+  { name: "atlas.webp", mime: "image/webp" },
+  { name: "atlas.manifest.json", mime: "application/json" }
+];
 function json(res, status, body) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
@@ -88,9 +92,9 @@ function postRoute(path, run) {
 function assetRoutes(packageRoot) {
   const files = [];
   for (const s of ASSET_STATES) {
-    files.push({ name: `${s}_spritesheet.webp`, mime: "image/webp" });
     files.push({ name: `${s}.meta.json`, mime: "application/json" });
   }
+  for (const f of ASSET_EXTRA) files.push({ name: f.name, mime: f.mime });
   return files.map((file) => ({
     kind: "exact",
     path: `${XG_ASSET_PREFIX}/${file.name}`,

@@ -43,16 +43,16 @@ const API = {
     }).then(r => r.json()) as Promise<{ animation: Animation; bubble?: string }>,
 }
 
-/** 素材元数据（启动时逐状态拉取） */
-interface Meta { frameSize: number; frameCount: number; fps: number }
-const metas = new Map<Animation, Meta>()
+/** 素材：单图集（鲸鱼娘模式）。所有状态共用一张 atlas.webp（每状态一行，
+ *  行内帧横排），动画切换 = 只改 backgroundPosition——backgroundImage/Size
+ *  终身恒定，从根上消除"换图瞬间的缩放/残留帧"（切背景图时浏览器要在
+ *  新旧图×新旧尺寸的中间组合上渲染，无法干净）。 */
+interface AtlasManifest { frameSize: number; rows: Record<Animation, number>; frames: Record<Animation, number>; fps: number }
+let atlas: AtlasManifest | null = null
 
 async function loadMetas(): Promise<void> {
-  const states: Animation[] = ['idle','thinking','working','confirm','done','listening','speaking','pet-drag','pet-pat','pet-feed']
-  await Promise.all(states.map(async s => {
-    const r = await fetch(`/xiaoguai/assets/${s}.meta.json`)
-    if (r.ok) metas.set(s, await r.json())
-  }))
+  const r = await fetch('/xiaoguai/assets/atlas.manifest.json')
+  if (r.ok) atlas = await r.json()
 }
 
 /** 暂时态：播完一整轮立即回落 idle */
@@ -86,19 +86,16 @@ export const inject: string[] = []
  *  加载≠就绪——大图下载后仍需解码,解码期间 backgroundImage 切换会露出
  *  旧图/空白,与位置更新叠加成"第二个小乖"。用 decode() 确保像素真正
  *  进显存后才允许动画切到该状态;启动时全部预解码。 */
-const decoded = new Map<Animation, Promise<void>>()
-function ensureDecoded(a: Animation): Promise<void> {
-  let p = decoded.get(a)
-  if (p === undefined) {
+let atlasDecoded: Promise<void> | null = null
+function ensureDecoded(_a: Animation): Promise<void> {
+  if (atlasDecoded === null) {
     const img = new Image()
-    img.src = `/xiaoguai/assets/${a}_spritesheet.webp`
-    p = img.decode().then(() => undefined).catch(() => undefined)
-    decoded.set(a, p)
+    img.src = '/xiaoguai/assets/atlas.webp'
+    atlasDecoded = img.decode().then(() => undefined).catch(() => undefined)
   }
-  return p
+  return atlasDecoded
 }
-const ALL_ANIMS: Animation[] = ['idle','thinking','working','confirm','done','listening','speaking','pet-drag','pet-pat','pet-feed']
-function preloadAll(): void { for (const a of ALL_ANIMS) void ensureDecoded(a) }
+function preloadAll(): void { void ensureDecoded('idle') }
 
 /** 单例守护（跨 bundle 强化版）：
  *  dsh 重启/热重载会加载新 client.js bundle——新 bundle 的模块级变量是全新的，
@@ -234,13 +231,14 @@ function XiaoguaiFloat(): ReactElement {
     }
   }, [animation])
 
-  // 切换瞬间同步写首帧（useLayoutEffect 在浏览器绘制前执行，
-  // 保证新 backgroundSize 与新 backgroundPosition 同帧生效，杜绝中间态）
+  // 切换瞬间同步写新状态首帧（useLayoutEffect 在浏览器绘制前执行）。
+  // 图集模式下图与尺寸不变,只是 position 的 y 换到新行——天然无中间态。
   useLayoutEffect(() => {
+    const row = atlas?.rows[animation] ?? 0
     if (spriteRef.current !== null) {
-      spriteRef.current.style.backgroundPosition = '0px 0'
+      spriteRef.current.style.backgroundPosition = `0px -${row * display.size}px`
     }
-  }, [animation])
+  }, [animation, display.size])
 
   // 帧循环：rAF + meta 驱动（30fps 原速）；暂时态播完一轮停在末帧并回落
   // 时钟重构：单一绝对时钟 + 取模相位（消除循环重置丢相位导致的节奏抽搐；
@@ -252,31 +250,32 @@ function XiaoguaiFloat(): ReactElement {
       const delta = ts - last
       last = ts
       const anim = animRef.current
-      const meta = metas.get(anim) ?? { frameSize: 256, frameCount: 1, fps: 30 }
+      const fps = atlas?.fps ?? 30
+      const frameCount = atlas?.frames[anim] ?? 1
+      const row = atlas?.rows[anim] ?? 0
       const st = frameRef.current
       if (st.anim !== anim) { st.anim = anim; st.index = 0; st.elapsed = 0; st.finished = false }
       if (!st.finished) {
         st.elapsed += delta
-        const frameMs = 1000 / meta.fps
+        const frameMs = 1000 / fps
         if (isTransient(anim)) {
-          // 暂时态：线性推进，到末帧停住
-          while (st.elapsed >= frameMs && st.index < meta.frameCount - 1) {
+          while (st.elapsed >= frameMs && st.index < frameCount - 1) {
             st.elapsed -= frameMs
             st.index += 1
           }
           if (st.elapsed >= frameMs) {
-            st.index = meta.frameCount - 1
+            st.index = frameCount - 1
             st.finished = true
             if (anim !== 'pet-drag') setUi({ local: null })
           }
         } else {
-          // 循环态：绝对时钟取模相位——循环点无相位丢失，节奏恒定
-          const phase = st.elapsed % (frameMs * meta.frameCount)
+          const phase = st.elapsed % (frameMs * frameCount)
           st.index = Math.floor(phase / frameMs)
         }
       }
       if (spriteRef.current !== null) {
-        spriteRef.current.style.backgroundPosition = `-${st.index * display.size}px 0`
+        // 图集坐标: x=帧列 y=状态行(切换只动这两个数,图与尺寸永不变)
+        spriteRef.current.style.backgroundPosition = `-${st.index * display.size}px -${row * display.size}px`
       }
       raf = requestAnimationFrame(tick)
     }
@@ -326,10 +325,11 @@ function XiaoguaiFloat(): ReactElement {
       'aria-label': '小乖',
       style: {
         width: size, height: size,
-        backgroundImage: `url(/xiaoguai/assets/${animation}_spritesheet.webp)`,
-        backgroundSize: `${size * (metas.get(animation)?.frameCount ?? 1)}px ${size}px`,
+        // 单图集: backgroundImage/Size 恒定不随动画变(动画只改position)
+        backgroundImage: 'url(/xiaoguai/assets/atlas.webp)',
+        backgroundSize: `${size * (atlas ? Math.max(...Object.values(atlas.frames)) : 34)}px ${size * (atlas ? Object.keys(atlas.rows).length : 10)}px`,
         backgroundRepeat: 'no-repeat',
-        // backgroundPosition 同理不归 React 管（rAF 直写）
+        // backgroundPosition 不归 React 管（rAF 直写,x=帧列y=状态行）
         imageRendering: 'auto',
         touchAction: 'none',
         cursor: dragRef.current === null ? 'grab' : 'grabbing',

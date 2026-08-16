@@ -1,0 +1,28 @@
+{
+  "frameSize": 256,
+  "rows": {
+    "idle": 0,
+    "thinking": 1,
+    "working": 2,
+    "confirm": 3,
+    "done": 4,
+    "listening": 5,
+    "speaking": 6,
+    "pet-drag": 7,
+    "pet-pat": 8,
+    "pet-feed": 9
+  },
+  "frames": {
+    "idle": 34,
+    "thinking": 33,
+    "working": 33,
+    "confirm": 20,
+    "done": 19,
+    "listening": 30,
+    "speaking": 26,
+    "pet-drag": 30,
+    "pet-pat": 23,
+    "pet-feed": 24
+  },
+  "fps": 30
+}

@@ -13,10 +13,14 @@ import type { XiaoguaiService } from './index.ts'
 export const XG_API_PREFIX = '/api/xiaoguai'
 export const XG_ASSET_PREFIX = '/xiaoguai/assets'
 
-/** 暴露的素材清单（10 状态精灵图 + meta） */
+/** 暴露的素材清单（单图集 + 各状态 meta） */
 const ASSET_STATES = [
   'idle', 'thinking', 'working', 'confirm', 'done',
   'listening', 'speaking', 'pet-drag', 'pet-pat', 'pet-feed',
+] as const
+const ASSET_EXTRA = [
+  { name: 'atlas.webp', mime: 'image/webp' },
+  { name: 'atlas.manifest.json', mime: 'application/json' },
 ] as const
 
 export function xgPackageRoot(importMetaUrl: string): string {
@@ -89,9 +93,9 @@ function postRoute(path: string, run: (body: Record<string, unknown>) => Promise
 function assetRoutes(packageRoot: string): WebRoute[] {
   const files: { name: string; mime: string }[] = []
   for (const s of ASSET_STATES) {
-    files.push({ name: `${s}_spritesheet.webp`, mime: 'image/webp' })
     files.push({ name: `${s}.meta.json`, mime: 'application/json' })
   }
+  for (const f of ASSET_EXTRA) files.push({ name: f.name, mime: f.mime })
   return files.map((file): WebRoute => ({
     kind: 'exact',
     path: `${XG_ASSET_PREFIX}/${file.name}`,
