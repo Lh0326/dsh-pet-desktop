@@ -1,7 +1,7 @@
 // src/index.ts
 import { Service } from "@deepseek-ai/cordis";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync as readFileSync2, writeFileSync, mkdirSync } from "node:fs";
 import { join as join2, dirname } from "node:path";
 
 // src/routes.ts
@@ -10,6 +10,8 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 var XG_API_PREFIX = "/api/xiaoguai";
 var XG_ASSET_PREFIX = "/xiaoguai/assets";
 var ASSET_STATES = [
@@ -207,6 +209,49 @@ async function bridgeTts(body) {
     await rm(dir, { recursive: true, force: true });
   }
 }
+function deepseekApiKey() {
+  const env = process.env.DEEPSEEK_API_KEY;
+  if (env !== void 0 && env.length > 10) return env;
+  try {
+    const text = readFileSync(join(process.env.DSH_HOME ?? join(homedir(), ".dsh"), ".credentials.yaml"), "utf-8");
+    const m = /DEEPSEEK_API_KEY[^\n]*?[=:]\s*(sk-[A-Za-z0-9]+)/.exec(text);
+    return m?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+async function bridgeSummarize(body) {
+  const text = body.text;
+  if (typeof text !== "string" || text.length === 0) throw new Error("invalid-text");
+  if (text.length <= 100) return { summary: cleanTextForSpeech(text) };
+  const key = deepseekApiKey();
+  if (key === null) return { summary: cleanTextForSpeech(text.slice(0, 160)) };
+  const resp = await fetch("https://api.deepseek.com/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: "deepseek-chat",
+      messages: [
+        { role: "system", content: "\u4F60\u662F\u8BED\u97F3\u64AD\u62A5\u6458\u8981\u5668\u3002\u628A\u7528\u6237\u7684\u6587\u672C\u538B\u7F29\u6210\u4E0D\u8D85\u8FC780\u5B57\u7684\u4E2D\u6587\u53E3\u8BED\u6982\u62EC,\u76F4\u63A5\u8F93\u51FA\u6982\u62EC\u5185\u5BB9,\u7981\u6B62markdown/emoji/\u661F\u53F7/\u5217\u8868,\u53EA\u8981\u9002\u5408\u6717\u8BFB\u7684\u7EAF\u6587\u5B57\u3002" },
+        { role: "user", content: text.slice(0, 4e3) }
+      ],
+      temperature: 0.3,
+      max_tokens: 200
+    }),
+    signal: AbortSignal.timeout(3e4)
+  });
+  if (!resp.ok) return { summary: cleanTextForSpeech(text.slice(0, 160)) };
+  const data = await resp.json();
+  const summary = data.choices?.[0]?.message?.content ?? "";
+  return { summary: cleanTextForSpeech(summary) || cleanTextForSpeech(text.slice(0, 160)) };
+}
+function cleanTextForSpeech(text) {
+  let t = text;
+  t = t.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "");
+  t = t.replace(/[*#~`>|]+/g, " ");
+  t = t.replace(/\s{2,}/g, " ").trim();
+  return t;
+}
 function makeXiaoguaiRoutes(deps) {
   const { service, packageRoot } = deps;
   return [
@@ -217,6 +262,7 @@ function makeXiaoguaiRoutes(deps) {
     // wav base64 可达数MB
     postRoute(`${XG_API_PREFIX}/voice/wake`, bridgeWake, 20 * 1024 * 1024),
     postRoute(`${XG_API_PREFIX}/voice/tts`, bridgeTts),
+    postRoute(`${XG_API_PREFIX}/voice/summarize`, bridgeSummarize, 1024 * 1024),
     postRoute(`${XG_API_PREFIX}/voice/send`, (body) => {
       const text = body.text;
       if (typeof text !== "string") throw new Error("invalid-text");
@@ -289,7 +335,7 @@ var XiaoguaiService = class extends Service {
     const home = process.env.DSH_HOME;
     this.persistPath = home !== void 0 && home !== "" ? join2(home, "xiaoguai.json") : join2(process.env.USERPROFILE ?? ".", ".dsh", "xiaoguai.json");
     try {
-      const loaded = JSON.parse(readFileSync(this.persistPath, "utf8"));
+      const loaded = JSON.parse(readFileSync2(this.persistPath, "utf8"));
       if (loaded.display) this.display = { ...this.display, ...loaded.display };
       if (loaded.affinity) this.affinity = { ...this.affinity, ...loaded.affinity };
     } catch {
@@ -431,8 +477,6 @@ var XiaoguaiService = class extends Service {
   async voiceSend(text) {
     const trimmed = text.trim();
     if (trimmed.length === 0) return { ok: false, error: "empty", bubble: "\u5C0F\u4E56\u6CA1\u542C\u6E05\uFF0C\u518D\u8BF4\u4E00\u6B21\uFF1F" };
-    const spokenTask = `[\u8BED\u97F3\u6A21\u5F0F] ${trimmed}
-(\u6B64\u6D88\u606F\u6765\u81EA\u8BED\u97F3\u52A9\u624B\u5C0F\u4E56,\u56DE\u590D\u5C06\u88AB\u8F6C\u6210\u8BED\u97F3\u64AD\u62A5:\u8BF7\u7528\u4E0D\u8D85\u8FC780\u5B57\u7684\u4E2D\u6587\u6982\u62EC\u4F5C\u7B54,\u76F4\u63A5\u8BF4\u7ED3\u8BBA,\u4E0D\u8981markdown\u683C\u5F0F/\u661F\u53F7/emoji/\u5217\u8868/\u4EE3\u7801\u5757,\u53EA\u8F93\u51FA\u9002\u5408\u6717\u8BFB\u7684\u7EAF\u6587\u5B57)`;
     try {
       const agents = this.ctx.agents;
       let agent = agents.list().at(-1);
@@ -445,7 +489,8 @@ var XiaoguaiService = class extends Service {
         agent = created.agent;
       }
       agent.followup(createUserMessage({
-        content: [{ type: "text", text: spokenTask }],
+        content: [{ type: "text", text: trimmed }],
+        // 原文投递(精简在播报层做)
         source: { kind: "user" }
       }));
       return { ok: true, bubble: "\u5C0F\u4E56\u6536\u5230\uFF0C\u8FD9\u5C31\u53BB\u529E\uFF01" };

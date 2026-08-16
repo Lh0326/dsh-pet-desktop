@@ -377,9 +377,18 @@ async function speakFeedback(): Promise<void> {
   }
   if (reply.length === 0) reply = '任务完成啦！'
   lastReplySeen = reply
-  // 播报文本: 回复可能很长,只播前300字(约1分钟语音)
-  const cleaned = cleanForTts(reply)
-  const spoken = cleaned.length > 300 ? `${cleaned.slice(0, 300)}……` : cleaned
+  // 播报层精简: 完整回复留在会话界面,语音只播DeepSeek二次概括(≤80字纯文字)
+  let spoken = cleanForTts(reply).slice(0, 300)
+  try {
+    const r = await fetch('/api/xiaoguai/voice/summarize', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: reply }),
+    })
+    if (r.ok) {
+      const { summary } = (await r.json()) as { summary?: string }
+      if ((summary ?? '').length > 0) spoken = summary!
+    }
+  } catch { /* 摘要失败退回清洗截断 */ }
   try {
     const r = await fetch('/api/xiaoguai/voice/tts', {
       method: 'POST', headers: { 'content-type': 'application/json' },

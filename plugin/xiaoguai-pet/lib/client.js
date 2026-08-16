@@ -304,8 +304,19 @@ async function speakFeedback() {
   }
   if (reply.length === 0) reply = "\u4EFB\u52A1\u5B8C\u6210\u5566\uFF01";
   lastReplySeen = reply;
-  const cleaned = cleanForTts(reply);
-  const spoken = cleaned.length > 300 ? `${cleaned.slice(0, 300)}\u2026\u2026` : cleaned;
+  let spoken = cleanForTts(reply).slice(0, 300);
+  try {
+    const r = await fetch("/api/xiaoguai/voice/summarize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: reply })
+    });
+    if (r.ok) {
+      const { summary } = await r.json();
+      if ((summary ?? "").length > 0) spoken = summary;
+    }
+  } catch {
+  }
   try {
     const r = await fetch("/api/xiaoguai/voice/tts", {
       method: "POST",

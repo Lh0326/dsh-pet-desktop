@@ -211,6 +211,57 @@ async function bridgeTts(body: Record<string, unknown>): Promise<unknown> {
   }
 }
 
+
+/** 播报摘要: 把完整回复压缩成≤80字纯文字(适合TTS朗读)
+ *  走 DeepSeek 官方 API 一次性 completion(零会话污染);
+ *  key 从环境变量或 $DSH_HOME/.credentials.yaml 的 DEEPSEEK_API_KEY 解析 */
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+
+function deepseekApiKey(): string | null {
+  const env = process.env.DEEPSEEK_API_KEY
+  if (env !== undefined && env.length > 10) return env
+  try {
+    const text = readFileSync(join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), '.credentials.yaml'), 'utf-8')
+    const m = /DEEPSEEK_API_KEY[^\n]*?[=:]\s*(sk-[A-Za-z0-9]+)/.exec(text)
+    return m?.[1] ?? null
+  } catch { return null }
+}
+
+async function bridgeSummarize(body: Record<string, unknown>): Promise<unknown> {
+  const text = body.text
+  if (typeof text !== 'string' || text.length === 0) throw new Error('invalid-text')
+  if (text.length <= 100) return { summary: cleanTextForSpeech(text) }
+  const key = deepseekApiKey()
+  if (key === null) return { summary: cleanTextForSpeech(text.slice(0, 160)) }
+  const resp = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      messages: [
+        { role: 'system', content: '你是语音播报摘要器。把用户的文本压缩成不超过80字的中文口语概括,直接输出概括内容,禁止markdown/emoji/星号/列表,只要适合朗读的纯文字。' },
+        { role: 'user', content: text.slice(0, 4000) },
+      ],
+      temperature: 0.3,
+      max_tokens: 200,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!resp.ok) return { summary: cleanTextForSpeech(text.slice(0, 160)) }
+  const data = await resp.json() as { choices?: Array<{ message?: { content?: string } }> }
+  const summary = data.choices?.[0]?.message?.content ?? ''
+  return { summary: cleanTextForSpeech(summary) || cleanTextForSpeech(text.slice(0, 160)) }
+}
+
+function cleanTextForSpeech(text: string): string {
+  let t = text
+  t = t.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, '')
+  t = t.replace(/[*#~`>|]+/g, ' ')
+  t = t.replace(/\s{2,}/g, ' ').trim()
+  return t
+}
+
 /** 完整路由族 */
 export function makeXiaoguaiRoutes(deps: { service: XiaoguaiService; packageRoot: string }): WebRoute[] {
   const { service, packageRoot } = deps
@@ -221,6 +272,7 @@ export function makeXiaoguaiRoutes(deps: { service: XiaoguaiService; packageRoot
     postRoute(`${XG_API_PREFIX}/voice/asr`, bridgeAsr, 20 * 1024 * 1024),  // wav base64 可达数MB
     postRoute(`${XG_API_PREFIX}/voice/wake`, bridgeWake, 20 * 1024 * 1024),
     postRoute(`${XG_API_PREFIX}/voice/tts`, bridgeTts),
+    postRoute(`${XG_API_PREFIX}/voice/summarize`, bridgeSummarize, 1024 * 1024),
     postRoute(`${XG_API_PREFIX}/voice/send`, (body) => {
       const text = body.text
       if (typeof text !== 'string') throw new Error('invalid-text')
