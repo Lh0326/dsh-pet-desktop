@@ -191,20 +191,21 @@ function XiaoguaiFloat() {
       prevAnimRef.current = animation;
       void ensureDecoded(animation);
       frameRef.current = { anim: null, index: 0, elapsed: 0, finished: false };
-      if (spriteRef.current !== null) {
-        spriteRef.current.style.backgroundPosition = "0px 0";
-      }
+    }
+  }, [animation]);
+  (0, import_react.useLayoutEffect)(() => {
+    if (spriteRef.current !== null) {
+      spriteRef.current.style.backgroundPosition = "0px 0";
     }
   }, [animation]);
   (0, import_react.useEffect)(() => {
     let raf = 0;
     let last = performance.now();
-    const FRAME_MS = 1e3 / 30;
     const tick = (ts) => {
       const delta = ts - last;
       last = ts;
       const anim = animRef.current;
-      const meta = metas.get(anim) ?? { frameSize: 512, frameCount: 1, fps: 30 };
+      const meta = metas.get(anim) ?? { frameSize: 256, frameCount: 1, fps: 30 };
       const st = frameRef.current;
       if (st.anim !== anim) {
         st.anim = anim;
@@ -215,19 +216,19 @@ function XiaoguaiFloat() {
       if (!st.finished) {
         st.elapsed += delta;
         const frameMs = 1e3 / meta.fps;
-        while (st.elapsed >= frameMs && st.index < meta.frameCount - 1) {
-          st.elapsed -= frameMs;
-          st.index += 1;
-        }
-        if (st.elapsed >= frameMs) {
-          if (isTransient(anim)) {
+        if (isTransient(anim)) {
+          while (st.elapsed >= frameMs && st.index < meta.frameCount - 1) {
+            st.elapsed -= frameMs;
+            st.index += 1;
+          }
+          if (st.elapsed >= frameMs) {
             st.index = meta.frameCount - 1;
             st.finished = true;
             if (anim !== "pet-drag") setUi({ local: null });
-          } else {
-            st.elapsed = 0;
-            st.index = 0;
           }
+        } else {
+          const phase = st.elapsed % (frameMs * meta.frameCount);
+          st.index = Math.floor(phase / frameMs);
         }
       }
       if (spriteRef.current !== null) {

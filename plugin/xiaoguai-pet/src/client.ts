@@ -9,7 +9,7 @@
  * 轮询 /api/xiaoguai/state（800ms）驱动会话联动相位。
  * @module dsh-xiaoguai-pet/client
  */
-import { createElement, useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from 'react'
+import { createElement, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createPortal } from 'react-dom'
 
@@ -212,48 +212,58 @@ function XiaoguaiFloat(): ReactElement {
   const prevAnimRef = useRef<Animation | null>(null)
   animRef.current = animation
 
-  // 动画切换瞬间（React 重建了 style）同步补写首帧位置 + 预加载新精灵图，
-  // 消除一帧空白/旧帧闪现（分身残影的第三来源：图片未加载完成时 backgroundImage 短暂为空）
+  // 动画切换瞬间处理（扁平化/闪变治理）：
+  // 切换时 React 重建 style 应用新 backgroundSize，但 rAF 的 backgroundPosition
+  // 还是旧动画的像素偏移（如 -3168px），在新尺寸(5984px宽)下偏移语义突变，
+  // 视觉呈现"压缩变形一瞬"。修法：在 React 提交新 style 的同一微任务里
+  // 立即写入新动画首帧 position(0px 0)——不让旧偏移在新尺寸下存活任何一帧。
   useEffect(() => {
     if (prevAnimRef.current !== animation) {
       prevAnimRef.current = animation
       void ensureDecoded(animation)
       frameRef.current = { anim: null, index: 0, elapsed: 0, finished: false }
-      if (spriteRef.current !== null) {
-        spriteRef.current.style.backgroundPosition = '0px 0'
-      }
+    }
+  }, [animation])
+
+  // 切换瞬间同步写首帧（useLayoutEffect 在浏览器绘制前执行，
+  // 保证新 backgroundSize 与新 backgroundPosition 同帧生效，杜绝中间态）
+  useLayoutEffect(() => {
+    if (spriteRef.current !== null) {
+      spriteRef.current.style.backgroundPosition = '0px 0'
     }
   }, [animation])
 
   // 帧循环：rAF + meta 驱动（30fps 原速）；暂时态播完一轮停在末帧并回落
+  // 时钟重构：单一绝对时钟 + 取模相位（消除循环重置丢相位导致的节奏抽搐；
+  // 旧实现重置时 elapsed 截断丢 0.x 帧相位，每循环累计成肉眼可见的抖动）
   useEffect(() => {
     let raf = 0
     let last = performance.now()
-    const FRAME_MS = 1000 / 30
     const tick = (ts: number): void => {
       const delta = ts - last
       last = ts
       const anim = animRef.current
-      const meta = metas.get(anim) ?? { frameSize: 512, frameCount: 1, fps: 30 }
+      const meta = metas.get(anim) ?? { frameSize: 256, frameCount: 1, fps: 30 }
       const st = frameRef.current
       if (st.anim !== anim) { st.anim = anim; st.index = 0; st.elapsed = 0; st.finished = false }
       if (!st.finished) {
         st.elapsed += delta
         const frameMs = 1000 / meta.fps
-        while (st.elapsed >= frameMs && st.index < meta.frameCount - 1) {
-          st.elapsed -= frameMs
-          st.index += 1
-        }
-        if (st.elapsed >= frameMs) {
-          if (isTransient(anim)) {
+        if (isTransient(anim)) {
+          // 暂时态：线性推进，到末帧停住
+          while (st.elapsed >= frameMs && st.index < meta.frameCount - 1) {
+            st.elapsed -= frameMs
+            st.index += 1
+          }
+          if (st.elapsed >= frameMs) {
             st.index = meta.frameCount - 1
             st.finished = true
-            // 播完一次 → 回落 idle（拖拽例外：pointerup 才回落）
             if (anim !== 'pet-drag') setUi({ local: null })
-          } else {
-            st.elapsed = 0
-            st.index = 0
           }
+        } else {
+          // 循环态：绝对时钟取模相位——循环点无相位丢失，节奏恒定
+          const phase = st.elapsed % (frameMs * meta.frameCount)
+          st.index = Math.floor(phase / frameMs)
         }
       }
       if (spriteRef.current !== null) {
