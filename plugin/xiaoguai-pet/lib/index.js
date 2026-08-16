@@ -493,7 +493,7 @@ var XiaoguaiService = class extends Service {
         // 原文投递(精简在播报层做)
         source: { kind: "user" }
       }));
-      return { ok: true, bubble: "\u5C0F\u4E56\u6536\u5230\uFF0C\u8FD9\u5C31\u53BB\u529E\uFF01" };
+      return { ok: true, bubble: "" };
     } catch (error) {
       return { ok: false, error: String(error), bubble: "\u53D1\u9001\u5931\u8D25\u4E86\u2026" };
     }

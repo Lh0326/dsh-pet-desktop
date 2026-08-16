@@ -274,7 +274,7 @@ export class XiaoguaiService extends Service {
         content: [{ type: 'text', text: trimmed }],   // 原文投递(精简在播报层做)
         source: { kind: 'user' },
       }))
-      return { ok: true, bubble: '小乖收到，这就去办！' }
+      return { ok: true, bubble: '' }   // 识别回显气泡已足够,不加重复提示
     } catch (error) {
       return { ok: false, error: String(error), bubble: '发送失败了…' }
     }

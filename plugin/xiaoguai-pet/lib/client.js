@@ -190,7 +190,6 @@ async function voiceStart() {
         session.lastVoiceAt = now;
         if (!session.hasSpoken) {
           session.hasSpoken = true;
-          setUi({ bubble: "\u25CF \u6B63\u5728\u5F55\u5165\u2026\uFF08\u8BF4\u5B8C\u505C\u987F\u5373\u81EA\u52A8\u53D1\u9001\uFF09", bubbleAt: Date.now() });
         }
       }
       if (!session.hasSpoken && now - session.startedAt > SILENCE_TIMEOUT_MS) {
@@ -326,7 +325,6 @@ async function speakFeedback() {
     if (!r.ok) return;
     const { audio_mp3 } = await r.json();
     setUi({ local: "speaking" });
-    setUi({ bubble: "\u{1F50A} \u6B63\u5728\u64AD\u62A5\u56DE\u590D\u2026", bubbleAt: Date.now() });
     await playBase64Mp3(audio_mp3);
   } catch {
   }
@@ -447,7 +445,6 @@ async function wakeStart() {
       if (w.state === "idle" && rms > WAKE_VOLUME_THRESHOLD) {
         w.state = "armed";
         console.log(`[xg-wake] ARMED rms=${rms.toFixed(3)} ringBlocks=${w.pcmRing.length}`);
-        setUi({ bubble: `\u{1F399} \u91C7\u96C6\u5524\u9192\u97F3\u9891\u4E2D(\u97F3\u91CF${rms.toFixed(3)})\u2026`, bubbleAt: Date.now() });
         w.armedAt = now;
       } else if (w.state === "armed") {
         if (now - w.armedAt >= WAKE_ARM_MS) {
@@ -465,15 +462,8 @@ async function wakeStart() {
           }, WAKE_COOLDOWN_MS);
         }
       }
-      ;
-      w.__peak = Math.max(w.__peak ?? 0, rms);
-      if (Math.floor(now / 2e3) !== Math.floor((now - 120) / 2e3)) {
-        const peak = w.__peak ?? 0;
-        if (w.state === "idle") setUi({ bubble: `\u{1F442}\u5F85\u673A \u97F3\u91CF\u5CF0\u503C ${peak.toFixed(3)} / \u95E8\u9650 ${WAKE_VOLUME_THRESHOLD} ${peak > WAKE_VOLUME_THRESHOLD ? "\u2713\u80FD\u89E6\u53D1" : "\u2717\u4F4E\u4E8E\u95E8\u9650"}`, bubbleAt: Date.now() });
-        w.__peak = 0;
-      }
     }, 120);
-    setUi({ bubble: '\u{1F442} \u5524\u9192\u5F85\u673A\u4E2D\uFF1A\u8BF4"\u5C0F\u4E56\u5C0F\u4E56"', bubbleAt: Date.now() });
+    setUi({ bubble: "\u8BF4\u300C\u5C0F\u4E56\u5C0F\u4E56\u300D\u5524\u6211", bubbleAt: Date.now() });
   } catch {
     wake = null;
   }
@@ -506,7 +496,6 @@ function pcmToWavBase64(pcm) {
 }
 async function wakeJudgePcm(pcm) {
   console.log(`[xg-wake] JUDGE-START pcm=${(pcm.length / 16e3).toFixed(2)}s`);
-  setUi({ bubble: `\u{1F4E6} \u5224\u5B9A\u97F3\u9891 ${(pcm.length / 16e3).toFixed(1)}s \u63D0\u4EA4\u4E2D\u2026`, bubbleAt: Date.now() });
   if (pcm.length < 8e3) {
     console.log("[xg-wake] drop: too short");
     return;
@@ -525,7 +514,6 @@ async function wakeJudgePcm(pcm) {
     }
     const { text } = await r.json();
     console.log(`[xg-wake] heard="${text ?? ""}"`);
-    setUi({ bubble: `\u{1F50D} \u542C\u5230\uFF1A"${(text ?? "").slice(0, 12)}"`, bubbleAt: Date.now() });
     if ((text ?? "").length <= 16 && /小乖|小怪|晓乖|小乘/.test(text ?? "")) {
       setUi({ bubble: "\u6211\u5728\u542C\uFF01", bubbleAt: Date.now() });
       void voiceStart();

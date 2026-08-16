@@ -247,7 +247,7 @@ async function voiceStart(): Promise<void> {
         session.lastVoiceAt = now
         if (!session.hasSpoken) {
           session.hasSpoken = true
-          setUi({ bubble: '● 正在录入…（说完停顿即自动发送）', bubbleAt: Date.now() })
+
         }
       }
       if (!session.hasSpoken && now - session.startedAt > SILENCE_TIMEOUT_MS) {
@@ -396,8 +396,7 @@ async function speakFeedback(): Promise<void> {
     })
     if (!r.ok) return
     const { audio_mp3 } = await r.json() as { audio_mp3: string }
-    setUi({ local: 'speaking' })
-    setUi({ bubble: '🔊 正在播报回复…', bubbleAt: Date.now() })
+    setUi({ local: 'speaking' })   // speaking动画即反馈,不加文字
     await playBase64Mp3(audio_mp3)
   } catch { /* TTS失败静默 */ }
   setUi({ local: null })
@@ -539,7 +538,7 @@ async function wakeStart(): Promise<void> {
       if (w.state === 'idle' && rms > WAKE_VOLUME_THRESHOLD) {
         w.state = 'armed'
         console.log(`[xg-wake] ARMED rms=${rms.toFixed(3)} ringBlocks=${w.pcmRing.length}`)
-        setUi({ bubble: `🎙 采集唤醒音频中(音量${rms.toFixed(3)})…`, bubbleAt: Date.now() })
+
         w.armedAt = now
       } else if (w.state === 'armed') {
         if (now - w.armedAt >= WAKE_ARM_MS) {
@@ -555,15 +554,9 @@ async function wakeStart(): Promise<void> {
         // 不做"提前静默放弃": PCM ring无成本,让时间窗自然结束
         // (旧放弃逻辑在句中低音量帧误判,造成armed/idle高频抖动)
       }
-      // 诊断: 待机峰值每2s刷气泡
-      ;(w as unknown as { __peak?: number }).__peak = Math.max((w as unknown as { __peak?: number }).__peak ?? 0, rms)
-      if (Math.floor(now / 2000) !== Math.floor((now - 120) / 2000)) {
-        const peak = (w as unknown as { __peak?: number }).__peak ?? 0
-        if (w.state === 'idle') setUi({ bubble: `👂待机 音量峰值 ${peak.toFixed(3)} / 门限 ${WAKE_VOLUME_THRESHOLD} ${peak > WAKE_VOLUME_THRESHOLD ? '✓能触发' : '✗低于门限'}`, bubbleAt: Date.now() })
-        ;(w as unknown as { __peak?: number }).__peak = 0
-      }
+      // 待机静默: 无气泡(测试期音量峰值诊断已移除)
     }, 120)
-    setUi({ bubble: '👂 唤醒待机中：说"小乖小乖"', bubbleAt: Date.now() })
+    setUi({ bubble: '说「小乖小乖」唤我', bubbleAt: Date.now() })
   } catch {
     // 麦克风权限未授予——静默降级(点击说话仍可用)
     wake = null
@@ -589,7 +582,7 @@ function pcmToWavBase64(pcm: Float32Array): string {
 
 async function wakeJudgePcm(pcm: Float32Array): Promise<void> {
   console.log(`[xg-wake] JUDGE-START pcm=${(pcm.length / 16000).toFixed(2)}s`)
-  setUi({ bubble: `📦 判定音频 ${(pcm.length / 16000).toFixed(1)}s 提交中…`, bubbleAt: Date.now() })
+
   if (pcm.length < 8000) { console.log('[xg-wake] drop: too short'); return }
   try {
     // STT文字匹配路线: SeCo-Paraformer在海量人声上训练,天生认任何说话人
@@ -604,7 +597,6 @@ async function wakeJudgePcm(pcm: Float32Array): Promise<void> {
     if (!r.ok) { setUi({ bubble: `⚠ 唤醒接口 ${r.status}`, bubbleAt: Date.now() }); return }
     const { text } = (await r.json()) as { text?: string }
     console.log(`[xg-wake] heard="${text ?? ''}"`)
-    setUi({ bubble: `🔍 听到："${(text ?? '').slice(0, 12)}"`, bubbleAt: Date.now() })
     if ((text ?? '').length <= 16 && /小乖|小怪|晓乖|小乘/.test(text ?? '')) {
       setUi({ bubble: '我在听！', bubbleAt: Date.now() })
       void voiceStart()
