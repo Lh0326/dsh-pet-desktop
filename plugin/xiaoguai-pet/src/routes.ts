@@ -149,10 +149,36 @@ async function bridgeTts(body: Record<string, unknown>): Promise<unknown> {
   try {
     const mp3 = pathJoin(dir, 'out.mp3')
     await new Promise<void>((resolve, reject) => {
-      // edge-tts CLI(已pip安装); -1 失败码
-      const child = spawn('edge-tts', ['--text', text, '--voice', 'zh-CN-XiaoyiNeural', '--write-media', mp3], { shell: true })
+      // 用 python -m edge_tts 调用（比 PATH 里的 edge-tts.exe 可靠——
+      // dsh 进程的 PATH 常不含 conda Scripts；显式已知 Python 路径，回退 PATH 解析）
+      const py = process.env.XIAOGUAI_PYTHON ?? 'F:/study/conda/python.exe'
+      // Windows 中文 argv 编码坑两连：
+      //  1) shell:true → cmd 引号重写损坏参数（exit-2）
+      //  2) 无 shell → node utf8 argv 被 python 按 GBK(ACP) 解码，中文变问号后
+      //     edge_tts 服务端拒绝（exit-1 asyncio）
+      // 终解：文本经 stdin(utf-8) 传入，python 侧 -c 脚本显式 utf-8 读取
+      const pyScript = [
+        'import sys, asyncio, edge_tts',
+        'async def main():',
+        '    text = sys.stdin.buffer.read().decode("utf-8")',
+        '    c = edge_tts.Communicate(text, "zh-CN-XiaoyiNeural")',
+        '    await c.save(sys.argv[1])',
+        'asyncio.run(main())',
+      ].join(String.fromCharCode(10)) + String.fromCharCode(10)
+      // TTS 子进程强制净化代理环境：edge_tts 走微软云，宿主(dsh/Tauri)env 里
+      // 残留的 HTTP(S)_PROXY(如本机clash)会让请求 NoAudioReceived——
+      // 继承shell无代理时手动spawn成功、dsh内失败的唯一差异项
+      const cleanEnv = { ...process.env } as Record<string, string | undefined>
+      delete cleanEnv.HTTP_PROXY; delete cleanEnv.http_proxy
+      delete cleanEnv.HTTPS_PROXY; delete cleanEnv.https_proxy
+      delete cleanEnv.ALL_PROXY; delete cleanEnv.all_proxy
+      const child = spawn(py, ['-c', pyScript, mp3], { env: cleanEnv })
+      child.stdin?.write(Buffer.from(text, 'utf-8'))
+      child.stdin?.end()
+      let stderr = ''
+      child.stderr?.on('data', (d: Buffer) => { stderr += d.toString().slice(0, 300) })
       child.on('error', reject)
-      child.on('exit', (code) => { code === 0 ? resolve() : reject(new Error(`tts-exit-${code}`)) })
+      child.on('exit', (code) => { code === 0 ? resolve() : reject(new Error(`tts-exit-${code}:${stderr.slice(-150)}`)) })
     })
     const buf = await readFile(mp3)
     return { audio_mp3: buf.toString('base64') }

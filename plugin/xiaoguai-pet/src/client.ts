@@ -174,6 +174,17 @@ interface VoiceSession {
 }
 let voice: VoiceSession | null = null
 
+/** 全局播放用 AudioContext：在用户手势（点击说话）中 resume 解锁，
+ *  之后 TTS 播报不再被 autoplay 策略拦截（Chromium 的手势激活在
+ *  长异步链路后会过期，Audio.play() 会被静默拒绝——语音"无输出"的根因） */
+let playbackCtx: AudioContext | null = null
+function ensurePlaybackUnlocked(): void {
+  if (playbackCtx === null) {
+    playbackCtx = new AudioContext()
+  }
+  if (playbackCtx.state === 'suspended') void playbackCtx.resume()
+}
+
 /** 音量阈值（RMS）：环境噪声通常 <0.02，正常说话 >0.06 */
 const VAD_THRESHOLD = 0.045
 /** 开口前容忍：3s 无声 → 超时退出 */
@@ -186,6 +197,7 @@ const MIN_DURATION_MS = 700
 /** 点击开始（非按住）：小乖进 listening，面板声纹条实时跳动 */
 async function voiceStart(): Promise<void> {
   if (voice !== null) return   // 会话进行中
+  ensurePlaybackUnlocked()     // 手势内解锁音频播放(TTS输出依赖)
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } })
     const audioCtx = new AudioContext({ sampleRate: 16000 })
@@ -347,12 +359,34 @@ async function speakFeedback(): Promise<void> {
   setUi({ local: null })
 }
 
-function playBase64Mp3(b64: string): Promise<void> {
-  return new Promise((resolve) => {
+async function playBase64Mp3(b64: string): Promise<void> {
+  // WebAudio播放: 手势期解锁的AudioContext不受autoplay限制;
+  // 兼容回退HTMLAudio(浏览器放行时)
+  try {
+    const ctx = playbackCtx ?? new AudioContext()
+    playbackCtx = ctx
+    if (ctx.state === 'suspended') await ctx.resume()
+    const bin = atob(b64)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+    const buf = await ctx.decodeAudioData(bytes.buffer)
+    await new Promise<void>((resolve) => {
+      const src = ctx.createBufferSource()
+      src.buffer = buf
+      src.connect(ctx.destination)
+      src.onended = () => resolve()
+      src.start()
+    })
+    return
+  } catch { /* WebAudio失败→回退HTMLAudio */ }
+  await new Promise<void>((resolve) => {
     const audio = new Audio(`data:audio/mp3;base64,${b64}`)
     audio.onended = () => resolve()
     audio.onerror = () => resolve()
-    void audio.play()
+    audio.play().catch(() => {
+      setUi({ bubble: '🔊 浏览器拦截了播放，点一下页面再试', bubbleAt: Date.now() })
+      resolve()
+    })
   })
 }
 

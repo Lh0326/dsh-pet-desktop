@@ -123,12 +123,20 @@ function apply() {
   };
 }
 var voice = null;
+var playbackCtx = null;
+function ensurePlaybackUnlocked() {
+  if (playbackCtx === null) {
+    playbackCtx = new AudioContext();
+  }
+  if (playbackCtx.state === "suspended") void playbackCtx.resume();
+}
 var VAD_THRESHOLD = 0.045;
 var SILENCE_TIMEOUT_MS = 3e3;
 var TRAILING_SILENCE_MS = 900;
 var MIN_DURATION_MS = 700;
 async function voiceStart() {
   if (voice !== null) return;
+  ensurePlaybackUnlocked();
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
     const audioCtx = new AudioContext({ sampleRate: 16e3 });
@@ -285,12 +293,33 @@ async function speakFeedback() {
   }
   setUi({ local: null });
 }
-function playBase64Mp3(b64) {
-  return new Promise((resolve) => {
+async function playBase64Mp3(b64) {
+  try {
+    const ctx = playbackCtx ?? new AudioContext();
+    playbackCtx = ctx;
+    if (ctx.state === "suspended") await ctx.resume();
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const buf = await ctx.decodeAudioData(bytes.buffer);
+    await new Promise((resolve) => {
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.onended = () => resolve();
+      src.start();
+    });
+    return;
+  } catch {
+  }
+  await new Promise((resolve) => {
     const audio = new Audio(`data:audio/mp3;base64,${b64}`);
     audio.onended = () => resolve();
     audio.onerror = () => resolve();
-    void audio.play();
+    audio.play().catch(() => {
+      setUi({ bubble: "\u{1F50A} \u6D4F\u89C8\u5668\u62E6\u622A\u4E86\u64AD\u653E\uFF0C\u70B9\u4E00\u4E0B\u9875\u9762\u518D\u8BD5", bubbleAt: Date.now() });
+      resolve();
+    });
   });
 }
 async function blobToWavBase64(blob) {

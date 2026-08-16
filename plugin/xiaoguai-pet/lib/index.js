@@ -152,10 +152,32 @@ async function bridgeTts(body) {
   try {
     const mp3 = pathJoin(dir, "out.mp3");
     await new Promise((resolve, reject) => {
-      const child = spawn("edge-tts", ["--text", text, "--voice", "zh-CN-XiaoyiNeural", "--write-media", mp3], { shell: true });
+      const py = process.env.XIAOGUAI_PYTHON ?? "F:/study/conda/python.exe";
+      const pyScript = [
+        "import sys, asyncio, edge_tts",
+        "async def main():",
+        '    text = sys.stdin.buffer.read().decode("utf-8")',
+        '    c = edge_tts.Communicate(text, "zh-CN-XiaoyiNeural")',
+        "    await c.save(sys.argv[1])",
+        "asyncio.run(main())"
+      ].join(String.fromCharCode(10)) + String.fromCharCode(10);
+      const cleanEnv = { ...process.env };
+      delete cleanEnv.HTTP_PROXY;
+      delete cleanEnv.http_proxy;
+      delete cleanEnv.HTTPS_PROXY;
+      delete cleanEnv.https_proxy;
+      delete cleanEnv.ALL_PROXY;
+      delete cleanEnv.all_proxy;
+      const child = spawn(py, ["-c", pyScript, mp3], { env: cleanEnv });
+      child.stdin?.write(Buffer.from(text, "utf-8"));
+      child.stdin?.end();
+      let stderr = "";
+      child.stderr?.on("data", (d) => {
+        stderr += d.toString().slice(0, 300);
+      });
       child.on("error", reject);
       child.on("exit", (code) => {
-        code === 0 ? resolve() : reject(new Error(`tts-exit-${code}`));
+        code === 0 ? resolve() : reject(new Error(`tts-exit-${code}:${stderr.slice(-150)}`));
       });
     });
     const buf = await readFile(mp3);
