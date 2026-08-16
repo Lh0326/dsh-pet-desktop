@@ -133,11 +133,19 @@ export function apply(): (() => void) | void {
   const root = createRoot(container)
   root.render(createElement(XiaoguaiEntry))
 
+  let pollFails = 0
   const poll = (): void => {
     if (!me.alive) return
     API.state().then(s => {
+      pollFails = 0
       if (me.alive) setUi({ snapshot: s })
-    }, () => { /* transport 失败下轮重试 */ })
+    }, () => {
+      // 连续失败=dsh服务死了(页面静默断连)——明示用户,唤醒/语音都不可用
+      pollFails += 1
+      if (pollFails === 5) {
+        setUi({ bubble: '⚠ 与dsh服务断开——语音不可用,请从托盘重启dsh', bubbleAt: Date.now() })
+      }
+    })
   }
   poll()
   me.timer = window.setInterval(() => {
@@ -438,7 +446,9 @@ const WAKE_VOLUME_THRESHOLD = 0.06    // 待机门限(略高于语音模式VAD,�
 const WAKE_ARM_MS = 1600              // 触发后采集窗口
 const WAKE_COOLDOWN_MS = 2500         // 判定后冷却(含进入语音模式的过渡)
 /** 唤醒词匹配表(ASR可能的各种写法) */
-const WAKE_PATTERNS = [/小乖小乖/, /小乖/, /^乖$/, /小乖同学/]
+const WAKE_PATTERNS = [/小乖/, /小怪/, /小乘坐/, /肖怪/, /^乖$/, /小乖同学/, /晓乖/]
+// 注: 实测SeCo对"小乖小乖"会出"小乖3乖"等变体——匹配以"小乖"子串为核心,
+// 佐以常见同音变体;长度≤12字已排除正常长句
 
 async function wakeStart(): Promise<void> {
   if (wake !== null) return

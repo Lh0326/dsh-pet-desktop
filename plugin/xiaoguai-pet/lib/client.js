@@ -98,11 +98,17 @@ function apply() {
   document.body.appendChild(container);
   const root = (0, import_client.createRoot)(container);
   root.render((0, import_react.createElement)(XiaoguaiEntry));
+  let pollFails = 0;
   const poll = () => {
     if (!me.alive) return;
     API.state().then((s) => {
+      pollFails = 0;
       if (me.alive) setUi({ snapshot: s });
     }, () => {
+      pollFails += 1;
+      if (pollFails === 5) {
+        setUi({ bubble: "\u26A0 \u4E0Edsh\u670D\u52A1\u65AD\u5F00\u2014\u2014\u8BED\u97F3\u4E0D\u53EF\u7528,\u8BF7\u4ECE\u6258\u76D8\u91CD\u542Fdsh", bubbleAt: Date.now() });
+      }
     });
   };
   poll();
@@ -361,7 +367,7 @@ var wake = null;
 var WAKE_VOLUME_THRESHOLD = 0.06;
 var WAKE_ARM_MS = 1600;
 var WAKE_COOLDOWN_MS = 2500;
-var WAKE_PATTERNS = [/小乖小乖/, /小乖/, /^乖$/, /小乖同学/];
+var WAKE_PATTERNS = [/小乖/, /小怪/, /小乘坐/, /肖怪/, /^乖$/, /小乖同学/, /晓乖/];
 async function wakeStart() {
   if (wake !== null) return;
   try {
