@@ -129,6 +129,15 @@ import { join as pathJoin } from 'node:path'
 
 const ASR_URL = 'http://127.0.0.1:9340/asr'
 
+/** 诊断: ASR服务端最近识别记录(唤醒排查数据源) */
+async function asrRecent(): Promise<unknown> {
+  try {
+    const resp = await fetch('http://127.0.0.1:9340/recent', { signal: AbortSignal.timeout(3000) })
+    if (resp.ok) return resp.json()
+  } catch { /* 服务不支持时返回空 */ }
+  return { entries: [] }
+}
+
 async function bridgeAsr(body: Record<string, unknown>): Promise<unknown> {
   const audioB64 = body.audio_wav
   if (typeof audioB64 !== 'string') throw new Error('invalid-audio')
@@ -193,6 +202,7 @@ export function makeXiaoguaiRoutes(deps: { service: XiaoguaiService; packageRoot
   return [
     getRoute(`${XG_API_PREFIX}/state`, () => service.state()),
     getRoute(`${XG_API_PREFIX}/diag`, () => ({ atlasHits: atlasHits(), time: Date.now() })),
+    getRoute(`${XG_API_PREFIX}/diag/asr`, () => asrRecent()),
     postRoute(`${XG_API_PREFIX}/voice/asr`, bridgeAsr, 20 * 1024 * 1024),  // wav base64 可达数MB
     postRoute(`${XG_API_PREFIX}/voice/tts`, bridgeTts),
     postRoute(`${XG_API_PREFIX}/voice/send`, (body) => {

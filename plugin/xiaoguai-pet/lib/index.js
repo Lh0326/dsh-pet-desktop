@@ -133,6 +133,14 @@ function assetRoutes(packageRoot) {
   }));
 }
 var ASR_URL = "http://127.0.0.1:9340/asr";
+async function asrRecent() {
+  try {
+    const resp = await fetch("http://127.0.0.1:9340/recent", { signal: AbortSignal.timeout(3e3) });
+    if (resp.ok) return resp.json();
+  } catch {
+  }
+  return { entries: [] };
+}
 async function bridgeAsr(body) {
   const audioB64 = body.audio_wav;
   if (typeof audioB64 !== "string") throw new Error("invalid-audio");
@@ -191,6 +199,7 @@ function makeXiaoguaiRoutes(deps) {
   return [
     getRoute(`${XG_API_PREFIX}/state`, () => service.state()),
     getRoute(`${XG_API_PREFIX}/diag`, () => ({ atlasHits: atlasHits(), time: Date.now() })),
+    getRoute(`${XG_API_PREFIX}/diag/asr`, () => asrRecent()),
     postRoute(`${XG_API_PREFIX}/voice/asr`, bridgeAsr, 20 * 1024 * 1024),
     // wav base64 可达数MB
     postRoute(`${XG_API_PREFIX}/voice/tts`, bridgeTts),

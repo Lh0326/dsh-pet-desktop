@@ -27,9 +27,9 @@ model = AutoModel(
 print('[xg-asr] model ready', flush=True)
 
 # 诊断: 最近20条识别结果(唤醒排查用,经/diag/asr暴露)
-__recent = []
+_recent_log = []
 def recent_texts():
-    return __recent[-20:]
+    return _recent_log[-20:]
 
 def clean(text: str) -> str:
     # paraformer输出带字间空格 -> 中文邻接的空格删除(英文单词间距保留)
@@ -43,6 +43,15 @@ def clean(text: str) -> str:
     return re.sub(r'<\|[^|]*\|>', '', ''.join(out)).strip()
 
 class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/recent':
+            out = json.dumps({'entries': recent_texts()}, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header('content-type', 'application/json; charset=utf-8')
+            self.send_header('content-length', str(len(out)))
+            self.end_headers(); self.wfile.write(out); return
+        self.send_response(404); self.end_headers()
+
     def do_POST(self):
         if self.path != '/asr':
             self.send_response(404); self.end_headers(); return
@@ -61,8 +70,8 @@ class H(BaseHTTPRequestHandler):
             try:
                 res = model.generate(input=tmp, cache={}, hotword=HOTWORD_PATH)
                 text = clean(res[0]['text']) if res else ''
-                __recent.append({'t': __import__('time').strftime('%H:%M:%S'), 'text': text, 'bytes': len(raw)})
-                del __recent[:-20]
+                _recent_log.append({'t': __import__('time').strftime('%H:%M:%S'), 'text': text, 'bytes': len(raw)})
+                del _recent_log[:-20]
             except Exception:
                 import traceback; traceback.print_exc()
                 text = ''
