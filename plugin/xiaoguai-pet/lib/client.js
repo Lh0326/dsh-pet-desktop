@@ -90,6 +90,9 @@ function apply() {
   window[WINDOW_KEY] = me;
   void loadMetas();
   preloadAll();
+  window.setTimeout(() => {
+    if (me.alive) void wakeStart();
+  }, 2e3);
   const container = document.createElement("div");
   container.dataset.xiaoguaiPetRoot = "";
   document.body.appendChild(container);
@@ -107,6 +110,7 @@ function apply() {
     if (me.alive && document.visibilityState === "visible") poll();
   }, 800);
   me.dispose = () => {
+    wakeStop();
     try {
       root.unmount();
     } catch {
@@ -352,6 +356,113 @@ async function blobToWavBase64(blob) {
   let bin = "";
   for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
   return btoa(bin);
+}
+var wake = null;
+var WAKE_VOLUME_THRESHOLD = 0.06;
+var WAKE_ARM_MS = 1600;
+var WAKE_COOLDOWN_MS = 2500;
+var WAKE_PATTERNS = [/小乖小乖/, /小乖/, /^乖$/, /小乖同学/];
+async function wakeStart() {
+  if (wake !== null) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+    const audioCtx = new AudioContext({ sampleRate: 16e3 });
+    const src = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    src.connect(analyser);
+    wake = { stream, audioCtx, analyser, recorder: null, chunks: [], timer: 0, state: "idle", armedAt: 0, cancelled: false };
+    const buf = new Float32Array(analyser.fftSize);
+    wake.timer = window.setInterval(async () => {
+      const w = wake;
+      if (w === null) return;
+      if (voice !== null || ui.local !== null) {
+        w.state = "idle";
+        return;
+      }
+      analyser.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+      const rms = Math.sqrt(sum / buf.length);
+      const now = performance.now();
+      if (w.state === "idle" && rms > WAKE_VOLUME_THRESHOLD) {
+        w.state = "armed";
+        w.armedAt = now;
+        w.chunks = [];
+        try {
+          w.recorder = new MediaRecorder(w.stream, { mimeType: "audio/webm" });
+          w.recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) w.chunks.push(e.data);
+          };
+          w.recorder.start(250);
+        } catch {
+          w.state = "idle";
+          return;
+        }
+      } else if (w.state === "armed") {
+        if (now - w.armedAt >= WAKE_ARM_MS) {
+          const rec = w.recorder;
+          w.recorder = null;
+          w.state = "cooldown";
+          if (rec !== null && rec.state !== "inactive") {
+            const blob = await new Promise((resolve) => {
+              rec.onstop = () => resolve(new Blob(w.chunks, { type: "audio/webm" }));
+              rec.stop();
+            });
+            void wakeJudge(blob);
+          }
+          setTimeout(() => {
+            if (wake !== null && wake.state === "cooldown") wake.state = "idle";
+          }, WAKE_COOLDOWN_MS);
+        } else if (rms < WAKE_VOLUME_THRESHOLD * 0.4 && now - w.armedAt > 600) {
+          const rec = w.recorder;
+          w.recorder = null;
+          w.state = "cooldown";
+          if (rec !== null && rec.state !== "inactive") {
+            rec.onstop = () => void 0;
+            rec.stop();
+          }
+          setTimeout(() => {
+            if (wake !== null && wake.state === "cooldown") wake.state = "idle";
+          }, 800);
+        }
+      }
+    }, 120);
+    setUi({ bubble: '\u{1F442} \u5524\u9192\u5F85\u673A\u4E2D\uFF1A\u8BF4"\u5C0F\u4E56\u5C0F\u4E56"', bubbleAt: Date.now() });
+  } catch {
+    wake = null;
+  }
+}
+function wakeStop() {
+  const w = wake;
+  wake = null;
+  if (w === null) return;
+  window.clearInterval(w.timer);
+  if (w.recorder !== null && w.state === "armed") {
+    w.recorder.onstop = () => void 0;
+    w.recorder.stop();
+  }
+  w.stream.getTracks().forEach((t) => t.stop());
+  void w.audioCtx.close();
+}
+async function wakeJudge(blob) {
+  if (blob.size < 3e3) return;
+  try {
+    const wavB64 = await blobToWavBase64(blob);
+    const r = await fetch("/api/xiaoguai/voice/asr", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ audio_wav: wavB64 })
+    });
+    if (!r.ok) return;
+    const text = (await r.json()).text ?? "";
+    if (text.length > 12) return;
+    if (WAKE_PATTERNS.some((re) => re.test(text))) {
+      setUi({ bubble: "\u6211\u5728\u542C\uFF01", bubbleAt: Date.now() });
+      void voiceStart();
+    }
+  } catch {
+  }
 }
 function VoicePanel() {
   const state = (0, import_react.useSyncExternalStore)(subscribe, () => ui);

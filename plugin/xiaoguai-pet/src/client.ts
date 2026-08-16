@@ -124,6 +124,8 @@ export function apply(): (() => void) | void {
   ;(window as unknown as Record<string, PetInstance | undefined>)[WINDOW_KEY] = me
   void loadMetas()
   preloadAll()
+  // 唤醒词待机: 延迟2s启动(避开页面加载高峰,麦克风权限框也不至于打断首屏)
+  window.setTimeout(() => { if (me.alive) void wakeStart() }, 2000)
 
   const container = document.createElement('div')
   container.dataset.xiaoguaiPetRoot = ''
@@ -143,6 +145,7 @@ export function apply(): (() => void) | void {
   }, 800)
 
   me.dispose = () => {
+    wakeStop()
     try { root.unmount() } catch { /* 已卸载 */ }
     container.remove()
   }
@@ -413,6 +416,123 @@ async function blobToWavBase64(blob: Blob): Promise<string> {
   return btoa(bin)
 }
 
+
+
+// —— 唤醒词待机（"小乖小乖"语音入口,替代点击说话） ——
+// 两层漏斗: 音量门限(零开销,静默时完全不跑) → 疑似语音1.5s → ASR文本匹配
+// "小乖"。命中→自动进入语音模式。回复播报/语音交互进行中不监听(防自触发)。
+interface WakeService {
+  stream: MediaStream
+  audioCtx: AudioContext
+  analyser: AnalyserNode
+  recorder: MediaRecorder | null
+  chunks: Blob[]
+  timer: number
+  // 状态: idle待命 | armed(音量超阈,采集中) | cooldown(判定后冷却)
+  state: 'idle' | 'armed' | 'cooldown'
+  armedAt: number
+  cancelled: boolean
+}
+let wake: WakeService | null = null
+const WAKE_VOLUME_THRESHOLD = 0.06    // 待机门限(略高于语音模式VAD,压低误触发)
+const WAKE_ARM_MS = 1600              // 触发后采集窗口
+const WAKE_COOLDOWN_MS = 2500         // 判定后冷却(含进入语音模式的过渡)
+/** 唤醒词匹配表(ASR可能的各种写法) */
+const WAKE_PATTERNS = [/小乖小乖/, /小乖/, /^乖$/, /小乖同学/]
+
+async function wakeStart(): Promise<void> {
+  if (wake !== null) return
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } })
+    const audioCtx = new AudioContext({ sampleRate: 16000 })
+    const src = audioCtx.createMediaStreamSource(stream)
+    const analyser = audioCtx.createAnalyser()
+    analyser.fftSize = 512
+    src.connect(analyser)
+    wake = { stream, audioCtx, analyser, recorder: null, chunks: [], timer: 0, state: 'idle', armedAt: 0, cancelled: false }
+    const buf = new Float32Array(analyser.fftSize)
+    wake.timer = window.setInterval(async () => {
+      const w = wake
+      if (w === null) return
+      // 语音模式/播报进行中挂起判定(不消耗ASR,也避免TTS自己唤醒自己)
+      if (voice !== null || ui.local !== null) { w.state = 'idle'; return }
+      analyser.getFloatTimeDomainData(buf)
+      let sum = 0
+      for (let i = 0; i < buf.length; i++) sum += buf[i]! * buf[i]!
+      const rms = Math.sqrt(sum / buf.length)
+      const now = performance.now()
+      if (w.state === 'idle' && rms > WAKE_VOLUME_THRESHOLD) {
+        // 疑似说话→armed: 开始录音
+        w.state = 'armed'
+        w.armedAt = now
+        w.chunks = []
+        try {
+          w.recorder = new MediaRecorder(w.stream, { mimeType: 'audio/webm' })
+          w.recorder.ondataavailable = (e) => { if (e.data.size > 0) w.chunks.push(e.data) }
+          w.recorder.start(250)
+        } catch { w.state = 'idle'; return }
+      } else if (w.state === 'armed') {
+        if (now - w.armedAt >= WAKE_ARM_MS) {
+          // 采集窗口结束→判定
+          const rec = w.recorder
+          w.recorder = null
+          w.state = 'cooldown'
+          if (rec !== null && rec.state !== 'inactive') {
+            const blob: Blob = await new Promise((resolve) => {
+              rec.onstop = () => resolve(new Blob(w.chunks, { type: 'audio/webm' }))
+              rec.stop()
+            })
+            void wakeJudge(blob)
+          }
+          setTimeout(() => { if (wake !== null && wake.state === 'cooldown') wake.state = 'idle' }, WAKE_COOLDOWN_MS)
+        } else if (rms < WAKE_VOLUME_THRESHOLD * 0.4 && now - w.armedAt > 600) {
+          // 提前转静(短促噪声)→放弃
+          const rec = w.recorder
+          w.recorder = null
+          w.state = 'cooldown'
+          if (rec !== null && rec.state !== 'inactive') {
+            rec.onstop = () => undefined
+            rec.stop()
+          }
+          setTimeout(() => { if (wake !== null && wake.state === 'cooldown') wake.state = 'idle' }, 800)
+        }
+      }
+    }, 120)
+    setUi({ bubble: '👂 唤醒待机中：说"小乖小乖"', bubbleAt: Date.now() })
+  } catch {
+    // 麦克风权限未授予——静默降级(点击说话仍可用)
+    wake = null
+  }
+}
+
+function wakeStop(): void {
+  const w = wake
+  wake = null
+  if (w === null) return
+  window.clearInterval(w.timer)
+  if (w.recorder !== null && w.state === 'armed') { w.recorder.onstop = () => undefined; w.recorder.stop() }
+  w.stream.getTracks().forEach(t => t.stop())
+  void w.audioCtx.close()
+}
+
+async function wakeJudge(blob: Blob): Promise<void> {
+  if (blob.size < 3000) return   // 太短
+  try {
+    const wavB64 = await blobToWavBase64(blob)
+    const r = await fetch('/api/xiaoguai/voice/asr', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ audio_wav: wavB64 }),
+    })
+    if (!r.ok) return
+    const text = ((await r.json()) as { text?: string }).text ?? ''
+    if (text.length > 12) return   // 长句=正常对话,不是唤醒
+    if (WAKE_PATTERNS.some(re => re.test(text))) {
+      // 命中! 进入语音模式
+      setUi({ bubble: '我在听！', bubbleAt: Date.now() })
+      void voiceStart()
+    }
+  } catch { /* 判定失败=当作未命中 */ }
+}
 
 /** 面板内语音区：声纹波形 + 说话/取消按钮 */
 function VoicePanel(): ReactElement {
