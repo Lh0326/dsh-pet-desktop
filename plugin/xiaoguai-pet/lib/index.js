@@ -1,5 +1,6 @@
 // src/index.ts
 import { Service } from "@deepseek-ai/cordis";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join as join2, dirname } from "node:path";
 
@@ -171,6 +172,11 @@ function makeXiaoguaiRoutes(deps) {
     postRoute(`${XG_API_PREFIX}/voice/asr`, bridgeAsr, 20 * 1024 * 1024),
     // wav base64 可达数MB
     postRoute(`${XG_API_PREFIX}/voice/tts`, bridgeTts),
+    postRoute(`${XG_API_PREFIX}/voice/send`, (body) => {
+      const text = body.text;
+      if (typeof text !== "string") throw new Error("invalid-text");
+      return service.voiceSend(text);
+    }),
     postRoute(`${XG_API_PREFIX}/interact`, (body) => {
       const kind = body.kind;
       if (kind !== "pat" && kind !== "feed" && kind !== "dragEnd" && kind !== "hide" && kind !== "summon") {
@@ -357,9 +363,33 @@ var XiaoguaiService = class extends Service {
         return { animation: "idle" };
     }
   }
+  /** 语音链路终点：把识别文本投递到当前活跃会话（无会话则自动建一个） */
+  async voiceSend(text) {
+    const trimmed = text.trim();
+    if (trimmed.length === 0) return { ok: false, error: "empty", bubble: "\u5C0F\u4E56\u6CA1\u542C\u6E05\uFF0C\u518D\u8BF4\u4E00\u6B21\uFF1F" };
+    try {
+      const agents = this.ctx.agents;
+      let agent = agents.list().at(-1);
+      if (agent === void 0) {
+        const { randomUUID } = await import("node:crypto");
+        const created = await agents.create({
+          sessionId: `xiaoguai-${randomUUID()}`,
+          meta: { cwd: process.cwd() }
+        });
+        agent = created.agent;
+      }
+      agent.followup(createUserMessage({
+        content: [{ type: "text", text: trimmed }],
+        source: { kind: "user" }
+      }));
+      return { ok: true, bubble: "\u5C0F\u4E56\u6536\u5230\uFF0C\u8FD9\u5C31\u53BB\u529E\uFF01" };
+    } catch (error) {
+      return { ok: false, error: String(error), bubble: "\u53D1\u9001\u5931\u8D25\u4E86\u2026" };
+    }
+  }
 };
 var name = "xiaoguai-pet";
-var inject = ["webServer"];
+var inject = ["webServer", "agents"];
 function apply(ctx) {
   const service = new XiaoguaiService(ctx);
   const routes = makeXiaoguaiRoutes({ service, packageRoot: packageRootFrom(import.meta.url) });

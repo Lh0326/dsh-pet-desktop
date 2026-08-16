@@ -169,6 +169,11 @@ export function makeXiaoguaiRoutes(deps: { service: XiaoguaiService; packageRoot
     getRoute(`${XG_API_PREFIX}/diag`, () => ({ atlasHits: atlasHits(), time: Date.now() })),
     postRoute(`${XG_API_PREFIX}/voice/asr`, bridgeAsr, 20 * 1024 * 1024),  // wav base64 可达数MB
     postRoute(`${XG_API_PREFIX}/voice/tts`, bridgeTts),
+    postRoute(`${XG_API_PREFIX}/voice/send`, (body) => {
+      const text = body.text
+      if (typeof text !== 'string') throw new Error('invalid-text')
+      return service.voiceSend(text)
+    }),
     postRoute(`${XG_API_PREFIX}/interact`, (body) => {
       const kind = body.kind
       if (kind !== 'pat' && kind !== 'feed' && kind !== 'dragEnd' && kind !== 'hide' && kind !== 'summon') {

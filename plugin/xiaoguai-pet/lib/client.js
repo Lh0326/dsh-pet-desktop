@@ -122,6 +122,127 @@ function apply() {
     }
   };
 }
+var mediaRecorder = null;
+var audioChunks = [];
+async function voiceStart() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16e3 } });
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunks.push(e.data);
+    };
+    mediaRecorder.start(250);
+    setUi({ local: "listening" });
+  } catch {
+    setUi({ bubble: "\u9EA6\u514B\u98CE\u4E0D\u53EF\u7528", bubbleAt: Date.now() });
+  }
+}
+async function voiceStop() {
+  const rec = mediaRecorder;
+  if (rec === null) return;
+  mediaRecorder = null;
+  setUi({ local: "thinking" });
+  const blob = await new Promise((resolve) => {
+    rec.onstop = () => {
+      rec.stream.getTracks().forEach((t) => t.stop());
+      resolve(new Blob(audioChunks, { type: "audio/webm" }));
+    };
+    rec.stop();
+  });
+  if (blob.size < 2e3) {
+    setUi({ local: null });
+    return;
+  }
+  const wavB64 = await blobToWavBase64(blob);
+  let text = "";
+  try {
+    const r = await fetch("/api/xiaoguai/voice/asr", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ audio_wav: wavB64 })
+    });
+    if (r.ok) text = (await r.json()).text ?? "";
+  } catch {
+  }
+  if (text.length === 0) {
+    setUi({ bubble: "\u5C0F\u4E56\u6CA1\u542C\u6E05\u2026", bubbleAt: Date.now() });
+    setUi({ local: null });
+    return;
+  }
+  setUi({ bubble: `\u201C${text}\u201D`, bubbleAt: Date.now() });
+  try {
+    const r = await fetch("/api/xiaoguai/voice/send", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text })
+    });
+    const res = await r.json();
+    if (res.bubble) setUi({ bubble: res.bubble, bubbleAt: Date.now() });
+  } catch {
+  }
+  setUi({ local: null });
+  void speakFeedback();
+}
+async function speakFeedback() {
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 1e3));
+    const st = ui.snapshot;
+    if (st?.animation === "done") break;
+  }
+  try {
+    const r = await fetch("/api/xiaoguai/voice/tts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "\u4EFB\u52A1\u5B8C\u6210\u5566\uFF01" })
+    });
+    if (!r.ok) return;
+    const { audio_mp3 } = await r.json();
+    setUi({ local: "speaking" });
+    await playBase64Mp3(audio_mp3);
+  } catch {
+  }
+  setUi({ local: null });
+}
+function playBase64Mp3(b64) {
+  return new Promise((resolve) => {
+    const audio = new Audio(`data:audio/mp3;base64,${b64}`);
+    audio.onended = () => resolve();
+    audio.onerror = () => resolve();
+    void audio.play();
+  });
+}
+async function blobToWavBase64(blob) {
+  const buf = await blob.arrayBuffer();
+  const ctx = new AudioContext({ sampleRate: 16e3 });
+  const decoded = await ctx.decodeAudioData(buf);
+  const ch = decoded.getChannelData(0);
+  const len = ch.length;
+  const wav = new ArrayBuffer(44 + len * 2);
+  const view = new DataView(wav);
+  const w = (off, str) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
+  };
+  w(0, "RIFF");
+  view.setUint32(4, 36 + len * 2, true);
+  w(8, "WAVE");
+  w(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, 16e3, true);
+  view.setUint32(28, 32e3, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  w(36, "data");
+  view.setUint32(40, len * 2, true);
+  for (let i = 0; i < len; i++) view.setInt16(44 + i * 2, Math.max(-32768, Math.min(32767, ch[i] * 32767)), true);
+  void ctx.close();
+  const bytes = new Uint8Array(wav);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return btoa(bin);
+}
 function XiaoguaiEntry() {
   const state = (0, import_react.useSyncExternalStore)(subscribe, () => ui);
   const visible = state.snapshot?.display.visible ?? true;
@@ -407,6 +528,17 @@ function XiaoguaiFloat() {
       (0, import_react.createElement)(
         "div",
         { style: { display: "flex", gap: 6 } },
+        (0, import_react.createElement)("button", {
+          type: "button",
+          onPointerDown: () => {
+            void voiceStart();
+          },
+          onPointerUp: () => {
+            void voiceStop();
+          },
+          style: { cursor: "pointer", flex: 1 },
+          title: "\u6309\u4F4F\u8BF4\u8BDD"
+        }, "\u{1F3A4} \u8BF4\u8BDD"),
         (0, import_react.createElement)("button", {
           type: "button",
           disabled: snapshot?.affinity.feedCooldown === true,

@@ -5,6 +5,7 @@
  * @module dsh-xiaoguai-pet
  */
 import { Context, Service } from '@deepseek-ai/cordis'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
@@ -227,6 +228,32 @@ export class XiaoguaiService extends Service {
         return { animation: 'idle' }
     }
   }
+
+  /** 语音链路终点：把识别文本投递到当前活跃会话（无会话则自动建一个） */
+  async voiceSend(text: string): Promise<{ ok: boolean; error?: string; bubble: string }> {
+    const trimmed = text.trim()
+    if (trimmed.length === 0) return { ok: false, error: 'empty', bubble: '小乖没听清，再说一次？' }
+    try {
+      const agents = this.ctx.agents
+      let agent = agents.list().at(-1)   // 最近活跃的顶层会话
+      if (agent === undefined) {
+        // 没有会话——创建一个（cwd 用默认工作区）
+        const { randomUUID } = await import('node:crypto')
+        const created = await agents.create({
+          sessionId: `xiaoguai-${randomUUID()}` as never,
+          meta: { cwd: process.cwd() },
+        })
+        agent = created.agent
+      }
+      agent.followup(createUserMessage({
+        content: [{ type: 'text', text: trimmed }],
+        source: { kind: 'user' },
+      }))
+      return { ok: true, bubble: '小乖收到，这就去办！' }
+    } catch (error) {
+      return { ok: false, error: String(error), bubble: '发送失败了…' }
+    }
+  }
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -236,7 +263,7 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export const name = 'xiaoguai-pet'
-export const inject = ['webServer']
+export const inject = ['webServer', 'agents']
 
 export function apply(ctx: Context): void {
   const service = new XiaoguaiService(ctx)

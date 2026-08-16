@@ -155,6 +155,127 @@ export function apply(): (() => void) | void {
   }
 }
 
+
+// —— 语音链路客户端（按住说话 → ASR → 发会话 → TTS 播报） ——
+let mediaRecorder: MediaRecorder | null = null
+let audioChunks: Blob[] = []
+
+/** 开始录音（listening 状态） */
+async function voiceStart(): Promise<void> {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } })
+    audioChunks = []
+    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data) }
+    mediaRecorder.start(250)
+    setUi({ local: 'listening' })
+  } catch {
+    setUi({ bubble: '麦克风不可用', bubbleAt: Date.now() })
+  }
+}
+
+/** 结束录音 → wav转码(ffmpeg由host做不了,浏览器webm直接喂ASR——SenseVoice兼容webm?) 
+ *  FunASR 支持 webm 解码(内部ffmpeg),直接base64上传 */
+async function voiceStop(): Promise<void> {
+  const rec = mediaRecorder
+  if (rec === null) return
+  mediaRecorder = null
+  setUi({ local: 'thinking' })
+  const blob: Blob = await new Promise((resolve) => {
+    rec.onstop = () => {
+      rec.stream.getTracks().forEach(t => t.stop())
+      resolve(new Blob(audioChunks, { type: 'audio/webm' }))
+    }
+    rec.stop()
+  })
+  if (blob.size < 2000) {   // 太短≈误触
+    setUi({ local: null })
+    return
+  }
+  // wav重采样16k单声道(用AudioContext解码再编码wav,保证SenseVoice兼容)
+  const wavB64 = await blobToWavBase64(blob)
+  // ASR
+  let text = ''
+  try {
+    const r = await fetch('/api/xiaoguai/voice/asr', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ audio_wav: wavB64 }),
+    })
+    if (r.ok) text = ((await r.json()) as { text?: string }).text ?? ''
+  } catch { /* ASR失败 */ }
+  if (text.length === 0) {
+    setUi({ bubble: '小乖没听清…', bubbleAt: Date.now() })
+    setUi({ local: null })
+    return
+  }
+  setUi({ bubble: `“${text}”`, bubbleAt: Date.now() })
+  // 发送到会话
+  try {
+    const r = await fetch('/api/xiaoguai/voice/send', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text }),
+    })
+    const res = await r.json() as { bubble?: string }
+    if (res.bubble) setUi({ bubble: res.bubble, bubbleAt: Date.now() })
+  } catch { /* 发送失败 */ }
+  setUi({ local: null })
+  // 回复播报: 轮询等 turn 结束(done)后取最后助手消息→TTS(阶段3.5完善;
+  // 此处先播报"收到"确认音)
+  void speakFeedback()
+}
+
+async function speakFeedback(): Promise<void> {
+  // 简单版: 等done相位→TTS固定话术(后续接真实回复文本)
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 1000))
+    const st = ui.snapshot
+    if (st?.animation === 'done') break
+  }
+  try {
+    const r = await fetch('/api/xiaoguai/voice/tts', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: '任务完成啦！' }),
+    })
+    if (!r.ok) return
+    const { audio_mp3 } = await r.json() as { audio_mp3: string }
+    setUi({ local: 'speaking' })
+    await playBase64Mp3(audio_mp3)
+  } catch { /* TTS失败静默 */ }
+  setUi({ local: null })
+}
+
+function playBase64Mp3(b64: string): Promise<void> {
+  return new Promise((resolve) => {
+    const audio = new Audio(`data:audio/mp3;base64,${b64}`)
+    audio.onended = () => resolve()
+    audio.onerror = () => resolve()
+    void audio.play()
+  })
+}
+
+async function blobToWavBase64(blob: Blob): Promise<string> {
+  const buf = await blob.arrayBuffer()
+  const ctx = new AudioContext({ sampleRate: 16000 })
+  const decoded = await ctx.decodeAudioData(buf)
+  const ch = decoded.getChannelData(0)
+  // PCM16 wav编码
+  const len = ch.length
+  const wav = new ArrayBuffer(44 + len * 2)
+  const view = new DataView(wav)
+  const w = (off: number, str: string) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)) }
+  w(0, 'RIFF'); view.setUint32(4, 36 + len * 2, true); w(8, 'WAVE')
+  w(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true)
+  view.setUint32(24, 16000, true); view.setUint32(28, 32000, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true)
+  w(36, 'data'); view.setUint32(40, len * 2, true)
+  for (let i = 0; i < len; i++) view.setInt16(44 + i * 2, Math.max(-32768, Math.min(32767, ch[i]! * 32767)), true)
+  void ctx.close()
+  // ArrayBuffer→base64
+  const bytes = new Uint8Array(wav)
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192))
+  return btoa(bin)
+}
+
 function XiaoguaiEntry(): ReactElement {
   const state = useSyncExternalStore(subscribe, () => ui)
   const visible = state.snapshot?.display.visible ?? true
@@ -426,6 +547,13 @@ function XiaoguaiFloat(): ReactElement {
         createElement('span', null, `陪工 ${snapshot?.affinity.turns ?? 0}`),
       ),
       createElement('div', { style: { display: 'flex', gap: 6 } as React.CSSProperties },
+        createElement('button', {
+          type: 'button',
+          onPointerDown: () => { void voiceStart() },
+          onPointerUp: () => { void voiceStop() },
+          style: { cursor: 'pointer', flex: 1 } as React.CSSProperties,
+          title: '按住说话',
+        }, '🎤 说话'),
         createElement('button', {
           type: 'button',
           disabled: snapshot?.affinity.feedCooldown === true,
