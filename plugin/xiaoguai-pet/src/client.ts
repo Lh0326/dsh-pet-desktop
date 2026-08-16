@@ -83,14 +83,23 @@ function subscribe(l: () => void): () => void {
 /** 客户端半区无需宿主服务（纯浮层+fetch），inject 为空数组（loader 约定必须存在） */
 export const inject: string[] = []
 
-/** 精灵图预加载（消除动画切换时的首次加载空白——"分身/闪白"的第二来源） */
-const preloaded = new Set<string>()
-function preloadSpritesheet(a: Animation): void {
-  if (preloaded.has(a)) return
-  preloaded.add(a)
-  const img = new Image()
-  img.src = `/xiaoguai/assets/${a}_spritesheet.png`
+/** 精灵图预加载+解码门（重影主源治理）：
+ *  加载≠就绪——大图下载后仍需解码,解码期间 backgroundImage 切换会露出
+ *  旧图/空白,与位置更新叠加成"第二个小乖"。用 decode() 确保像素真正
+ *  进显存后才允许动画切到该状态;启动时全部预解码。 */
+const decoded = new Map<Animation, Promise<void>>()
+function ensureDecoded(a: Animation): Promise<void> {
+  let p = decoded.get(a)
+  if (p === undefined) {
+    const img = new Image()
+    img.src = `/xiaoguai/assets/${a}_spritesheet.webp`
+    p = img.decode().then(() => undefined).catch(() => undefined)
+    decoded.set(a, p)
+  }
+  return p
 }
+const ALL_ANIMS: Animation[] = ['idle','thinking','working','confirm','done','listening','speaking','pet-drag','pet-pat','pet-feed']
+function preloadAll(): void { for (const a of ALL_ANIMS) void ensureDecoded(a) }
 
 /** 单例守护：loader 可能执行 factory 两次（页面 reload/插件重启用期间旧实例未及 dispose），
  *  两次 apply 会产生两套 handler → 每个指针事件被处理两遍 → 拖拽位移×2（实测实锤）。
@@ -109,6 +118,7 @@ export function apply(): (() => void) | void {
   const me: PetInstance = { alive: true, timer: 0 }
   instance = me
   void loadMetas()
+  preloadAll()
 
   const container = document.createElement('div')
   container.dataset.xiaoguaiPetRoot = ''
@@ -207,7 +217,7 @@ function XiaoguaiFloat(): ReactElement {
   useEffect(() => {
     if (prevAnimRef.current !== animation) {
       prevAnimRef.current = animation
-      preloadSpritesheet(animation)
+      void ensureDecoded(animation)
       frameRef.current = { anim: null, index: 0, elapsed: 0, finished: false }
       if (spriteRef.current !== null) {
         spriteRef.current.style.backgroundPosition = '0px 0'
@@ -281,6 +291,12 @@ function XiaoguaiFloat(): ReactElement {
       position: 'fixed', right: pos.right, bottom: pos.bottom, zIndex: 2147483000,
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       userSelect: 'none', WebkitUserSelect: 'none',
+      // GPU合成层隔离: WebView2下fixed元素高频改right/bottom会出现
+      // 合成器与主文档更新不同步的"残影/第二个小乖"——
+      // 提升为独立合成层后位置变化不再牵动主文档重排
+      willChange: 'right, bottom',
+      transform: 'translateZ(0)',
+      backfaceVisibility: 'hidden',
     } as React.CSSProperties,
     onPointerEnter: showPanel,
     onPointerLeave: scheduleHidePanel,
@@ -291,7 +307,7 @@ function XiaoguaiFloat(): ReactElement {
       'aria-label': '小乖',
       style: {
         width: size, height: size,
-        backgroundImage: `url(/xiaoguai/assets/${animation}_spritesheet.png)`,
+        backgroundImage: `url(/xiaoguai/assets/${animation}_spritesheet.webp)`,
         backgroundSize: `${size * (metas.get(animation)?.frameCount ?? 1)}px ${size}px`,
         backgroundRepeat: 'no-repeat',
         // backgroundPosition 同理不归 React 管（rAF 直写）
@@ -303,7 +319,7 @@ function XiaoguaiFloat(): ReactElement {
         e.preventDefault()
         ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
         setHovered(false)   // 按下即收面板：摸头气泡不被面板遮挡（用户反馈#3）
-        preloadSpritesheet('pet-drag')
+        void ensureDecoded('pet-drag')
         // 锚点取"当前真实渲染位置"——DOM rect 是唯一不骗人的来源
         const rect = floatRef.current?.getBoundingClientRect()
         const current = rect !== undefined

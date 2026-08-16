@@ -65,12 +65,20 @@ function subscribe(l) {
   };
 }
 var inject = [];
-var preloaded = /* @__PURE__ */ new Set();
-function preloadSpritesheet(a) {
-  if (preloaded.has(a)) return;
-  preloaded.add(a);
-  const img = new Image();
-  img.src = `/xiaoguai/assets/${a}_spritesheet.png`;
+var decoded = /* @__PURE__ */ new Map();
+function ensureDecoded(a) {
+  let p = decoded.get(a);
+  if (p === void 0) {
+    const img = new Image();
+    img.src = `/xiaoguai/assets/${a}_spritesheet.webp`;
+    p = img.decode().then(() => void 0).catch(() => void 0);
+    decoded.set(a, p);
+  }
+  return p;
+}
+var ALL_ANIMS = ["idle", "thinking", "working", "confirm", "done", "listening", "speaking", "pet-drag", "pet-pat", "pet-feed"];
+function preloadAll() {
+  for (const a of ALL_ANIMS) void ensureDecoded(a);
 }
 var instance = null;
 function apply() {
@@ -82,6 +90,7 @@ function apply() {
   const me = { alive: true, timer: 0 };
   instance = me;
   void loadMetas();
+  preloadAll();
   const container = document.createElement("div");
   container.dataset.xiaoguaiPetRoot = "";
   document.body.appendChild(container);
@@ -180,7 +189,7 @@ function XiaoguaiFloat() {
   (0, import_react.useEffect)(() => {
     if (prevAnimRef.current !== animation) {
       prevAnimRef.current = animation;
-      preloadSpritesheet(animation);
+      void ensureDecoded(animation);
       frameRef.current = { anim: null, index: 0, elapsed: 0, finished: false };
       if (spriteRef.current !== null) {
         spriteRef.current.style.backgroundPosition = "0px 0";
@@ -257,7 +266,13 @@ function XiaoguaiFloat() {
         flexDirection: "column",
         alignItems: "center",
         userSelect: "none",
-        WebkitUserSelect: "none"
+        WebkitUserSelect: "none",
+        // GPU合成层隔离: WebView2下fixed元素高频改right/bottom会出现
+        // 合成器与主文档更新不同步的"残影/第二个小乖"——
+        // 提升为独立合成层后位置变化不再牵动主文档重排
+        willChange: "right, bottom",
+        transform: "translateZ(0)",
+        backfaceVisibility: "hidden"
       },
       onPointerEnter: showPanel,
       onPointerLeave: scheduleHidePanel
@@ -269,7 +284,7 @@ function XiaoguaiFloat() {
       style: {
         width: size,
         height: size,
-        backgroundImage: `url(/xiaoguai/assets/${animation}_spritesheet.png)`,
+        backgroundImage: `url(/xiaoguai/assets/${animation}_spritesheet.webp)`,
         backgroundSize: `${size * (metas.get(animation)?.frameCount ?? 1)}px ${size}px`,
         backgroundRepeat: "no-repeat",
         // backgroundPosition 同理不归 React 管（rAF 直写）
@@ -281,7 +296,7 @@ function XiaoguaiFloat() {
         e.preventDefault();
         e.target.setPointerCapture?.(e.pointerId);
         setHovered(false);
-        preloadSpritesheet("pet-drag");
+        void ensureDecoded("pet-drag");
         const rect = floatRef.current?.getBoundingClientRect();
         const current = rect !== void 0 ? { right: Math.max(0, window.innerWidth - rect.right), bottom: Math.max(0, window.innerHeight - rect.bottom) } : { right: display.right, bottom: display.bottom };
         dragRef.current = { startX: e.clientX, startY: e.clientY, ...current };

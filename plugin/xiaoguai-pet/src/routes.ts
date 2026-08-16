@@ -89,7 +89,7 @@ function postRoute(path: string, run: (body: Record<string, unknown>) => Promise
 function assetRoutes(packageRoot: string): WebRoute[] {
   const files: { name: string; mime: string }[] = []
   for (const s of ASSET_STATES) {
-    files.push({ name: `${s}_spritesheet.png`, mime: 'image/png' })
+    files.push({ name: `${s}_spritesheet.webp`, mime: 'image/webp' })
     files.push({ name: `${s}.meta.json`, mime: 'application/json' })
   }
   return files.map((file): WebRoute => ({

@@ -88,7 +88,7 @@ function postRoute(path, run) {
 function assetRoutes(packageRoot) {
   const files = [];
   for (const s of ASSET_STATES) {
-    files.push({ name: `${s}_spritesheet.png`, mime: "image/png" });
+    files.push({ name: `${s}_spritesheet.webp`, mime: "image/webp" });
     files.push({ name: `${s}.meta.json`, mime: "application/json" });
   }
   return files.map((file) => ({
