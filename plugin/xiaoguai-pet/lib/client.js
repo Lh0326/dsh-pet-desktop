@@ -336,7 +336,19 @@ async function blobToWavBase64(blob) {
   const buf = await blob.arrayBuffer();
   const ctx = new AudioContext({ sampleRate: 16e3 });
   const decoded = await ctx.decodeAudioData(buf);
-  const ch = decoded.getChannelData(0);
+  void ctx.close();
+  let ch;
+  if (Math.abs(decoded.sampleRate - 16e3) > 1) {
+    const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16e3), 16e3);
+    const src = off.createBufferSource();
+    src.buffer = decoded;
+    src.connect(off.destination);
+    src.start();
+    const rendered = await off.startRendering();
+    ch = rendered.getChannelData(0);
+  } else {
+    ch = decoded.getChannelData(0);
+  }
   const len = ch.length;
   const wav = new ArrayBuffer(44 + len * 2);
   const view = new DataView(wav);

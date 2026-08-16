@@ -405,7 +405,22 @@ async function blobToWavBase64(blob: Blob): Promise<string> {
   const buf = await blob.arrayBuffer()
   const ctx = new AudioContext({ sampleRate: 16000 })
   const decoded = await ctx.decodeAudioData(buf)
-  const ch = decoded.getChannelData(0)
+  void ctx.close()
+  // decodeAudioData 不跟随 AudioContext 的采样率(仍为原始48k)——
+  // 必须 OfflineAudioContext 显式重采样到 16k,否则 wav 头写 16k 而数据
+  // 是 48k,服务端 3 倍慢放变形(唤醒模型对时间结构敏感,必死)
+  let ch: Float32Array
+  if (Math.abs(decoded.sampleRate - 16000) > 1) {
+    const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000)
+    const src = off.createBufferSource()
+    src.buffer = decoded
+    src.connect(off.destination)
+    src.start()
+    const rendered = await off.startRendering()
+    ch = rendered.getChannelData(0)
+  } else {
+    ch = decoded.getChannelData(0)
+  }
   // PCM16 wav编码
   const len = ch.length
   const wav = new ArrayBuffer(44 + len * 2)
