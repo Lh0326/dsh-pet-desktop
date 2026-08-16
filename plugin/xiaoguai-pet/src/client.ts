@@ -156,45 +156,124 @@ export function apply(): (() => void) | void {
 }
 
 
-// —— 语音链路客户端（按住说话 → ASR → 发会话 → TTS 播报） ——
-let mediaRecorder: MediaRecorder | null = null
-let audioChunks: Blob[] = []
+// —— 语音链路客户端 v2（点击说话 + 实时声纹 + VAD 自动断句 + 3s 无声超时） ——
+interface VoiceSession {
+  stream: MediaStream
+  recorder: MediaRecorder
+  audioCtx: AudioContext
+  analyser: AnalyserNode
+  chunks: Blob[]
+  /** VAD 状态机 */
+  hasSpoken: boolean          // 本轮是否检测到过人声
+  lastVoiceAt: number         // 最近一次音量超阈值的时间
+  startedAt: number
+  timer: number               // 状态机轮询 interval
+  levels: number[]            // 声纹历史(最近40帧音量0~1)
+  cancelled: boolean
+}
+let voice: VoiceSession | null = null
 
-/** 开始录音（listening 状态） */
+/** 音量阈值（RMS）：环境噪声通常 <0.02，正常说话 >0.06 */
+const VAD_THRESHOLD = 0.045
+/** 开口前容忍：3s 无声 → 超时退出 */
+const SILENCE_TIMEOUT_MS = 3000
+/** 说完判定：检测到说话后连续 0.9s 低于阈值 → 自动断句 */
+const TRAILING_SILENCE_MS = 900
+/** 最短有效时长（防误触） */
+const MIN_DURATION_MS = 700
+
+/** 点击开始（非按住）：小乖进 listening，面板声纹条实时跳动 */
 async function voiceStart(): Promise<void> {
+  if (voice !== null) return   // 会话进行中
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } })
-    audioChunks = []
-    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
-    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data) }
-    mediaRecorder.start(250)
-    setUi({ local: 'listening' })
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } })
+    const audioCtx = new AudioContext({ sampleRate: 16000 })
+    const src = audioCtx.createMediaStreamSource(stream)
+    const analyser = audioCtx.createAnalyser()
+    analyser.fftSize = 512
+    src.connect(analyser)   // analyser 不连 destination（避免回环啸叫）
+
+    const chunks: Blob[] = []
+    const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
+    recorder.start(250)
+
+    const session: VoiceSession = {
+      stream, recorder, audioCtx, analyser, chunks,
+      hasSpoken: false, lastVoiceAt: performance.now(),
+      startedAt: performance.now(), timer: 0, levels: [], cancelled: false,
+    }
+    voice = session
+    setUi({ local: 'listening', bubble: '我在听，请说…', bubbleAt: Date.now() })
+
+    const buf = new Float32Array(analyser.fftSize)
+    session.timer = window.setInterval(() => {
+      if (voice !== session) return
+      analyser.getFloatTimeDomainData(buf)
+      // RMS 音量
+      let sum = 0
+      for (let i = 0; i < buf.length; i++) sum += buf[i]! * buf[i]!
+      const rms = Math.sqrt(sum / buf.length)
+      session.levels.push(Math.min(1, rms * 6))   // 归一化显示增益
+      if (session.levels.length > 40) session.levels.shift()
+      setVoiceLevels(session.levels.slice())
+
+      const now = performance.now()
+      if (rms > VAD_THRESHOLD) {
+        session.lastVoiceAt = now
+        if (!session.hasSpoken) {
+          session.hasSpoken = true
+          setUi({ bubble: '● 正在录入…（说完停顿即自动发送）', bubbleAt: Date.now() })
+        }
+      }
+      if (!session.hasSpoken && now - session.startedAt > SILENCE_TIMEOUT_MS) {
+        // 3s 没听到声音 → 超时退出
+        void voiceCancel('没听到声音，下次记得说话哦~')
+        return
+      }
+      if (session.hasSpoken && now - session.lastVoiceAt > TRAILING_SILENCE_MS) {
+        // 说完停顿 0.9s → 自动断句发送
+        void voiceFinish(session)
+      }
+    }, 100)
   } catch {
-    setUi({ bubble: '麦克风不可用', bubbleAt: Date.now() })
+    setUi({ bubble: '麦克风不可用（检查浏览器权限）', bubbleAt: Date.now() })
+    setUi({ local: null })
   }
 }
 
-/** 结束录音 → wav转码(ffmpeg由host做不了,浏览器webm直接喂ASR——SenseVoice兼容webm?) 
- *  FunASR 支持 webm 解码(内部ffmpeg),直接base64上传 */
-async function voiceStop(): Promise<void> {
-  const rec = mediaRecorder
-  if (rec === null) return
-  mediaRecorder = null
+/** 用户主动取消（面板"取消"按钮） */
+async function voiceCancel(msg?: string): Promise<void> {
+  const session = voice
+  if (session === null) return
+  voice = null
+  window.clearInterval(session.timer)
+  setVoiceLevels(null)
+  session.recorder.stop()
+  session.stream.getTracks().forEach(t => t.stop())
+  void session.audioCtx.close()
+  setUi({ local: null, ...(msg !== undefined ? { bubble: msg, bubbleAt: Date.now() } : {}) })
+}
+
+/** VAD 自动断句 → 采集收尾 → ASR → 发会话 */
+async function voiceFinish(session: VoiceSession): Promise<void> {
+  if (voice !== session) return
+  voice = null
+  window.clearInterval(session.timer)
+  setVoiceLevels(null)
   setUi({ local: 'thinking' })
+  const elapsed = performance.now() - session.startedAt
   const blob: Blob = await new Promise((resolve) => {
-    rec.onstop = () => {
-      rec.stream.getTracks().forEach(t => t.stop())
-      resolve(new Blob(audioChunks, { type: 'audio/webm' }))
-    }
-    rec.stop()
+    session.recorder.onstop = () => resolve(new Blob(session.chunks, { type: 'audio/webm' }))
+    session.recorder.stop()
   })
-  if (blob.size < 2000) {   // 太短≈误触
-    setUi({ local: null })
+  session.stream.getTracks().forEach(t => t.stop())
+  void session.audioCtx.close()
+  if (blob.size < 2000 || elapsed < MIN_DURATION_MS) {
+    setUi({ local: null, bubble: '说太短啦，再说一次？', bubbleAt: Date.now() })
     return
   }
-  // wav重采样16k单声道(用AudioContext解码再编码wav,保证SenseVoice兼容)
   const wavB64 = await blobToWavBase64(blob)
-  // ASR
   let text = ''
   try {
     const r = await fetch('/api/xiaoguai/voice/asr', {
@@ -202,14 +281,12 @@ async function voiceStop(): Promise<void> {
       body: JSON.stringify({ audio_wav: wavB64 }),
     })
     if (r.ok) text = ((await r.json()) as { text?: string }).text ?? ''
-  } catch { /* ASR失败 */ }
+  } catch { /* ASR 失败 */ }
   if (text.length === 0) {
-    setUi({ bubble: '小乖没听清…', bubbleAt: Date.now() })
-    setUi({ local: null })
+    setUi({ local: null, bubble: '小乖没听清…', bubbleAt: Date.now() })
     return
   }
   setUi({ bubble: `“${text}”`, bubbleAt: Date.now() })
-  // 发送到会话
   try {
     const r = await fetch('/api/xiaoguai/voice/send', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -219,9 +296,15 @@ async function voiceStop(): Promise<void> {
     if (res.bubble) setUi({ bubble: res.bubble, bubbleAt: Date.now() })
   } catch { /* 发送失败 */ }
   setUi({ local: null })
-  // 回复播报: 轮询等 turn 结束(done)后取最后助手消息→TTS(阶段3.5完善;
-  // 此处先播报"收到"确认音)
   void speakFeedback()
+}
+
+// —— 声纹条 UI 状态（面板内实时波形） ——
+let voiceLevels: number[] | null = null
+const voiceLevelListeners = new Set<() => void>()
+function setVoiceLevels(levels: number[] | null): void {
+  voiceLevels = levels
+  for (const l of voiceLevelListeners) l()
 }
 
 async function speakFeedback(): Promise<void> {
@@ -274,6 +357,59 @@ async function blobToWavBase64(blob: Blob): Promise<string> {
   let bin = ''
   for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192))
   return btoa(bin)
+}
+
+
+/** 面板内语音区：声纹波形 + 说话/取消按钮 */
+function VoicePanel(): ReactElement {
+  const state = useSyncExternalStore(subscribe, () => ui)
+  const [, force] = useState(0)
+  useEffect(() => {
+    const l = () => force(n => n + 1)
+    voiceLevelListeners.add(l)
+    return () => { voiceLevelListeners.delete(l) }
+  }, [])
+  const recording = state.local === 'listening'
+  const bars = voiceLevels ?? []
+  return createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } as React.CSSProperties },
+    recording && createElement('div', {
+      style: {
+        display: 'flex', alignItems: 'center', gap: 2, height: 24,
+        padding: '4px 6px', borderRadius: 6,
+        background: 'rgba(30,41,59,0.8)',
+      } as React.CSSProperties,
+      'data-testid': 'voice-waveform',
+    },
+      // 声纹: 40根柱,高度=音量
+      ...Array.from({ length: 40 }, (_, i) => {
+        const v = bars[i] ?? 0
+        const h = Math.max(2, Math.round(v * 20))
+        return createElement('div', {
+          key: i,
+          style: {
+            width: 3, height: h, borderRadius: 1,
+            background: v > 0.12 ? '#34d399' : 'rgba(148,163,184,0.4)',   // 说话绿色,静默灰
+            transition: 'height .08s linear',
+          } as React.CSSProperties,
+        })
+      }),
+    ),
+    createElement('div', { style: { display: 'flex', gap: 6 } as React.CSSProperties },
+      recording
+        ? createElement('button', {
+            type: 'button',
+            onClick: () => { void voiceCancel() },
+            style: { cursor: 'pointer', flex: 1 } as React.CSSProperties,
+          }, '■ 取消')
+        : createElement('button', {
+            type: 'button',
+            disabled: state.local !== null,   // 其他暂时态进行中禁用
+            onClick: () => { void voiceStart() },
+            style: { cursor: 'pointer', flex: 1 } as React.CSSProperties,
+            title: '点击说话，说完停顿自动发送',
+          }, '🎤 说话'),
+    ),
+  )
 }
 
 function XiaoguaiEntry(): ReactElement {
@@ -546,14 +682,8 @@ function XiaoguaiFloat(): ReactElement {
         createElement('span', null, `投喂 ${snapshot?.affinity.feeds ?? 0}`),
         createElement('span', null, `陪工 ${snapshot?.affinity.turns ?? 0}`),
       ),
+      createElement(VoicePanel),
       createElement('div', { style: { display: 'flex', gap: 6 } as React.CSSProperties },
-        createElement('button', {
-          type: 'button',
-          onPointerDown: () => { void voiceStart() },
-          onPointerUp: () => { void voiceStop() },
-          style: { cursor: 'pointer', flex: 1 } as React.CSSProperties,
-          title: '按住说话',
-        }, '🎤 说话'),
         createElement('button', {
           type: 'button',
           disabled: snapshot?.affinity.feedCooldown === true,

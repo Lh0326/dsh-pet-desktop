@@ -122,36 +122,98 @@ function apply() {
     }
   };
 }
-var mediaRecorder = null;
-var audioChunks = [];
+var voice = null;
+var VAD_THRESHOLD = 0.045;
+var SILENCE_TIMEOUT_MS = 3e3;
+var TRAILING_SILENCE_MS = 900;
+var MIN_DURATION_MS = 700;
 async function voiceStart() {
+  if (voice !== null) return;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16e3 } });
-    audioChunks = [];
-    mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) audioChunks.push(e.data);
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+    const audioCtx = new AudioContext({ sampleRate: 16e3 });
+    const src = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    src.connect(analyser);
+    const chunks = [];
+    const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
     };
-    mediaRecorder.start(250);
-    setUi({ local: "listening" });
+    recorder.start(250);
+    const session = {
+      stream,
+      recorder,
+      audioCtx,
+      analyser,
+      chunks,
+      hasSpoken: false,
+      lastVoiceAt: performance.now(),
+      startedAt: performance.now(),
+      timer: 0,
+      levels: [],
+      cancelled: false
+    };
+    voice = session;
+    setUi({ local: "listening", bubble: "\u6211\u5728\u542C\uFF0C\u8BF7\u8BF4\u2026", bubbleAt: Date.now() });
+    const buf = new Float32Array(analyser.fftSize);
+    session.timer = window.setInterval(() => {
+      if (voice !== session) return;
+      analyser.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+      const rms = Math.sqrt(sum / buf.length);
+      session.levels.push(Math.min(1, rms * 6));
+      if (session.levels.length > 40) session.levels.shift();
+      setVoiceLevels(session.levels.slice());
+      const now = performance.now();
+      if (rms > VAD_THRESHOLD) {
+        session.lastVoiceAt = now;
+        if (!session.hasSpoken) {
+          session.hasSpoken = true;
+          setUi({ bubble: "\u25CF \u6B63\u5728\u5F55\u5165\u2026\uFF08\u8BF4\u5B8C\u505C\u987F\u5373\u81EA\u52A8\u53D1\u9001\uFF09", bubbleAt: Date.now() });
+        }
+      }
+      if (!session.hasSpoken && now - session.startedAt > SILENCE_TIMEOUT_MS) {
+        void voiceCancel("\u6CA1\u542C\u5230\u58F0\u97F3\uFF0C\u4E0B\u6B21\u8BB0\u5F97\u8BF4\u8BDD\u54E6~");
+        return;
+      }
+      if (session.hasSpoken && now - session.lastVoiceAt > TRAILING_SILENCE_MS) {
+        void voiceFinish(session);
+      }
+    }, 100);
   } catch {
-    setUi({ bubble: "\u9EA6\u514B\u98CE\u4E0D\u53EF\u7528", bubbleAt: Date.now() });
+    setUi({ bubble: "\u9EA6\u514B\u98CE\u4E0D\u53EF\u7528\uFF08\u68C0\u67E5\u6D4F\u89C8\u5668\u6743\u9650\uFF09", bubbleAt: Date.now() });
+    setUi({ local: null });
   }
 }
-async function voiceStop() {
-  const rec = mediaRecorder;
-  if (rec === null) return;
-  mediaRecorder = null;
+async function voiceCancel(msg) {
+  const session = voice;
+  if (session === null) return;
+  voice = null;
+  window.clearInterval(session.timer);
+  setVoiceLevels(null);
+  session.recorder.stop();
+  session.stream.getTracks().forEach((t) => t.stop());
+  void session.audioCtx.close();
+  setUi({ local: null, ...msg !== void 0 ? { bubble: msg, bubbleAt: Date.now() } : {} });
+}
+async function voiceFinish(session) {
+  if (voice !== session) return;
+  voice = null;
+  window.clearInterval(session.timer);
+  setVoiceLevels(null);
   setUi({ local: "thinking" });
+  const elapsed = performance.now() - session.startedAt;
   const blob = await new Promise((resolve) => {
-    rec.onstop = () => {
-      rec.stream.getTracks().forEach((t) => t.stop());
-      resolve(new Blob(audioChunks, { type: "audio/webm" }));
-    };
-    rec.stop();
+    session.recorder.onstop = () => resolve(new Blob(session.chunks, { type: "audio/webm" }));
+    session.recorder.stop();
   });
-  if (blob.size < 2e3) {
-    setUi({ local: null });
+  session.stream.getTracks().forEach((t) => t.stop());
+  void session.audioCtx.close();
+  if (blob.size < 2e3 || elapsed < MIN_DURATION_MS) {
+    setUi({ local: null, bubble: "\u8BF4\u592A\u77ED\u5566\uFF0C\u518D\u8BF4\u4E00\u6B21\uFF1F", bubbleAt: Date.now() });
     return;
   }
   const wavB64 = await blobToWavBase64(blob);
@@ -166,8 +228,7 @@ async function voiceStop() {
   } catch {
   }
   if (text.length === 0) {
-    setUi({ bubble: "\u5C0F\u4E56\u6CA1\u542C\u6E05\u2026", bubbleAt: Date.now() });
-    setUi({ local: null });
+    setUi({ local: null, bubble: "\u5C0F\u4E56\u6CA1\u542C\u6E05\u2026", bubbleAt: Date.now() });
     return;
   }
   setUi({ bubble: `\u201C${text}\u201D`, bubbleAt: Date.now() });
@@ -183,6 +244,12 @@ async function voiceStop() {
   }
   setUi({ local: null });
   void speakFeedback();
+}
+var voiceLevels = null;
+var voiceLevelListeners = /* @__PURE__ */ new Set();
+function setVoiceLevels(levels) {
+  voiceLevels = levels;
+  for (const l of voiceLevelListeners) l();
 }
 async function speakFeedback() {
   for (let i = 0; i < 60; i++) {
@@ -242,6 +309,73 @@ async function blobToWavBase64(blob) {
   let bin = "";
   for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
   return btoa(bin);
+}
+function VoicePanel() {
+  const state = (0, import_react.useSyncExternalStore)(subscribe, () => ui);
+  const [, force] = (0, import_react.useState)(0);
+  (0, import_react.useEffect)(() => {
+    const l = () => force((n) => n + 1);
+    voiceLevelListeners.add(l);
+    return () => {
+      voiceLevelListeners.delete(l);
+    };
+  }, []);
+  const recording = state.local === "listening";
+  const bars = voiceLevels ?? [];
+  return (0, import_react.createElement)(
+    "div",
+    { style: { display: "flex", flexDirection: "column", gap: 6 } },
+    recording && (0, import_react.createElement)(
+      "div",
+      {
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 2,
+          height: 24,
+          padding: "4px 6px",
+          borderRadius: 6,
+          background: "rgba(30,41,59,0.8)"
+        },
+        "data-testid": "voice-waveform"
+      },
+      ...Array.from({ length: 40 }, (_, i) => {
+        const v = bars[i] ?? 0;
+        const h = Math.max(2, Math.round(v * 20));
+        return (0, import_react.createElement)("div", {
+          key: i,
+          style: {
+            width: 3,
+            height: h,
+            borderRadius: 1,
+            background: v > 0.12 ? "#34d399" : "rgba(148,163,184,0.4)",
+            // 说话绿色,静默灰
+            transition: "height .08s linear"
+          }
+        });
+      })
+    ),
+    (0, import_react.createElement)(
+      "div",
+      { style: { display: "flex", gap: 6 } },
+      recording ? (0, import_react.createElement)("button", {
+        type: "button",
+        onClick: () => {
+          void voiceCancel();
+        },
+        style: { cursor: "pointer", flex: 1 }
+      }, "\u25A0 \u53D6\u6D88") : (0, import_react.createElement)("button", {
+        type: "button",
+        disabled: state.local !== null,
+        // 其他暂时态进行中禁用
+        onClick: () => {
+          void voiceStart();
+        },
+        style: { cursor: "pointer", flex: 1 },
+        title: "\u70B9\u51FB\u8BF4\u8BDD\uFF0C\u8BF4\u5B8C\u505C\u987F\u81EA\u52A8\u53D1\u9001"
+      }, "\u{1F3A4} \u8BF4\u8BDD")
+    )
+  );
 }
 function XiaoguaiEntry() {
   const state = (0, import_react.useSyncExternalStore)(subscribe, () => ui);
@@ -525,20 +659,10 @@ function XiaoguaiFloat() {
         (0, import_react.createElement)("span", null, `\u6295\u5582 ${snapshot?.affinity.feeds ?? 0}`),
         (0, import_react.createElement)("span", null, `\u966A\u5DE5 ${snapshot?.affinity.turns ?? 0}`)
       ),
+      (0, import_react.createElement)(VoicePanel),
       (0, import_react.createElement)(
         "div",
         { style: { display: "flex", gap: 6 } },
-        (0, import_react.createElement)("button", {
-          type: "button",
-          onPointerDown: () => {
-            void voiceStart();
-          },
-          onPointerUp: () => {
-            void voiceStop();
-          },
-          style: { cursor: "pointer", flex: 1 },
-          title: "\u6309\u4F4F\u8BF4\u8BDD"
-        }, "\u{1F3A4} \u8BF4\u8BDD"),
         (0, import_react.createElement)("button", {
           type: "button",
           disabled: snapshot?.affinity.feedCooldown === true,
