@@ -365,6 +365,7 @@ async function speakFeedback(): Promise<void> {
     const st = ui.snapshot
     if (st?.animation === 'done') break
   }
+  sfxDone()   // 任务完成提示音(播报摘要前奏)
   // 再等最后一条assistant消息落到state(轮询延迟容错)
   let reply = ''
   for (let i = 0; i < 5; i++) {
@@ -563,6 +564,38 @@ async function wakeStart(): Promise<void> {
   }
 }
 
+
+// —— 提示音效(WebAudio合成,零音频文件) ——
+/** 单音: freq(Hz) t0(起始秒) dur(秒) type(波形) gain */
+function tone(freq: number, t0: number, dur: number, type: OscillatorType = 'sine', gain = 0.12): void {
+  const ctx = playbackCtx ?? (playbackCtx = new AudioContext())
+  if (ctx.state === 'suspended') { void ctx.resume() }
+  const osc = ctx.createOscillator()
+  const g = ctx.createGain()
+  osc.type = type
+  osc.frequency.value = freq
+  // 包络: 快起缓落(避免咔哒声)
+  const t = ctx.currentTime + t0
+  g.gain.setValueAtTime(0, t)
+  g.gain.linearRampToValueAtTime(gain, t + 0.015)
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  osc.connect(g); g.connect(ctx.destination)
+  osc.start(t); osc.stop(t + dur + 0.05)
+}
+
+/** 唤醒成功: 上行"叮-咚"(清脆双音) */
+function sfxWake(): void {
+  tone(880, 0, 0.12, 'sine', 0.14)
+  tone(1318, 0.11, 0.18, 'sine', 0.12)
+}
+
+/** 任务完成: 欢快三连琶音(C-E-G上行) */
+function sfxDone(): void {
+  tone(659, 0, 0.12, 'triangle', 0.13)
+  tone(830, 0.10, 0.12, 'triangle', 0.12)
+  tone(988, 0.20, 0.25, 'triangle', 0.12)
+}
+
 /** PCM(Float32 16k)直接编码wav base64——无webm容器/解码/拼接环节 */
 function pcmToWavBase64(pcm: Float32Array): string {
   const len = pcm.length
@@ -599,6 +632,7 @@ async function wakeJudgePcm(pcm: Float32Array): Promise<void> {
     console.log(`[xg-wake] heard="${text ?? ''}"`)
     if ((text ?? '').length <= 16 && /小乖|小怪|晓乖|小乘/.test(text ?? '')) {
       setUi({ bubble: '我在听！', bubbleAt: Date.now() })
+      sfxWake()
       void voiceStart()
     }
   } catch (e) { console.log('[xg-wake] JUDGE-ERR', e); setUi({ bubble: '⚠ 唤醒判定异常', bubbleAt: Date.now() }) }

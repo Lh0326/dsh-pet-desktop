@@ -292,6 +292,7 @@ async function speakFeedback() {
     const st = ui.snapshot;
     if (st?.animation === "done") break;
   }
+  sfxDone();
   let reply = "";
   for (let i = 0; i < 5; i++) {
     const st = ui.snapshot;
@@ -468,6 +469,33 @@ async function wakeStart() {
     wake = null;
   }
 }
+function tone(freq, t0, dur, type = "sine", gain = 0.12) {
+  const ctx = playbackCtx ?? (playbackCtx = new AudioContext());
+  if (ctx.state === "suspended") {
+    void ctx.resume();
+  }
+  const osc = ctx.createOscillator();
+  const g = ctx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  const t = ctx.currentTime + t0;
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(gain, t + 0.015);
+  g.gain.exponentialRampToValueAtTime(1e-3, t + dur);
+  osc.connect(g);
+  g.connect(ctx.destination);
+  osc.start(t);
+  osc.stop(t + dur + 0.05);
+}
+function sfxWake() {
+  tone(880, 0, 0.12, "sine", 0.14);
+  tone(1318, 0.11, 0.18, "sine", 0.12);
+}
+function sfxDone() {
+  tone(659, 0, 0.12, "triangle", 0.13);
+  tone(830, 0.1, 0.12, "triangle", 0.12);
+  tone(988, 0.2, 0.25, "triangle", 0.12);
+}
 function pcmToWavBase64(pcm) {
   const len = pcm.length;
   const wav = new ArrayBuffer(44 + len * 2);
@@ -516,6 +544,7 @@ async function wakeJudgePcm(pcm) {
     console.log(`[xg-wake] heard="${text ?? ""}"`);
     if ((text ?? "").length <= 16 && /小乖|小怪|晓乖|小乘/.test(text ?? "")) {
       setUi({ bubble: "\u6211\u5728\u542C\uFF01", bubbleAt: Date.now() });
+      sfxWake();
       void voiceStart();
     }
   } catch (e) {
