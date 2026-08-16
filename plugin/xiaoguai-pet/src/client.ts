@@ -366,9 +366,9 @@ async function speakFeedback(): Promise<void> {
     if (st?.animation === 'done') break
   }
   sfxDone()   // 任务完成提示音(播报摘要前奏)
-  // 立即进入speaking动画——掩盖summarize+tts的1-4秒准备空窗
-  // (此前空窗回落idle,出现"播报中却待机"的错位)
-  setUi({ local: 'speaking' })
+  // 准备期(取回复/摘要/TTS合成)→thinking动画——语音尚未产出,
+  // "正在准备说话"用思考姿态表达;真出声了才切speaking(用户明确要求)
+  setUi({ local: 'thinking' })
   // 再等最后一条assistant消息落到state(轮询延迟容错)
   let reply = ''
   for (let i = 0; i < 5; i++) {
@@ -400,7 +400,8 @@ async function speakFeedback(): Promise<void> {
     })
     if (!r.ok) return
     const { audio_mp3 } = await r.json() as { audio_mp3: string }
-    setUi({ local: 'speaking' })   // speaking动画即反馈,不加文字
+    // 音频已就绪、即将出声——此刻才是speaking
+    setUi({ local: 'speaking' })
     await playBase64Mp3(audio_mp3)
   } catch { /* TTS失败静默 */ }
   setUi({ local: null })

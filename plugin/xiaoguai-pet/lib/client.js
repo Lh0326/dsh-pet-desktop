@@ -293,7 +293,7 @@ async function speakFeedback() {
     if (st?.animation === "done") break;
   }
   sfxDone();
-  setUi({ local: "speaking" });
+  setUi({ local: "thinking" });
   let reply = "";
   for (let i = 0; i < 5; i++) {
     const st = ui.snapshot;
