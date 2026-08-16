@@ -335,6 +335,29 @@ function setVoiceLevels(levels: number[] | null): void {
 let speakSinceSeq = 0
 let lastReplySeen = ''
 
+
+/** TTS播报文本清洗: 只留人类语言内容
+ *  - Markdown: **加粗** *斜体* `code` #标题 -列表 >引用 ~~删除~~ |表格|
+ *  - Emoji/符号图标(含变体选择符/零宽连接符组合)
+ *  原因: edge-tts会把**念成"星号星号",emoji会被跳过或乱念 */
+function cleanForTts(text: string): string {
+  let t = text
+  t = t.replace(/```[\s\S]*?```/g, '，代码略，')
+  t = t.replace(/`([^`]+)`/g, '$1')
+  t = t.replace(/\*\*([^*]+)\*\*/g, '$1')
+  t = t.replace(/\*([^*]+)\*/g, '$1')
+  t = t.replace(/~~([^~]+)~~/g, '$1')
+  t = t.replace(/^#{1,6}\s*/gm, '')
+  t = t.replace(/^\s*[-*+]\s+/gm, '')
+  t = t.replace(/^>\s?/gm, '')
+  t = t.replace(/\|/g, ' ')
+  t = t.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+  t = t.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/gu, '')
+  t = t.replace(/[*#~`>_]+/g, ' ')
+  t = t.replace(/\s{2,}/g, ' ').trim()
+  return t
+}
+
 async function speakFeedback(): Promise<void> {
   // 等 done 相位(最多60s)→取 lastReply 真实回复→TTS播报
   for (let i = 0; i < 60; i++) {
@@ -355,7 +378,8 @@ async function speakFeedback(): Promise<void> {
   if (reply.length === 0) reply = '任务完成啦！'
   lastReplySeen = reply
   // 播报文本: 回复可能很长,只播前300字(约1分钟语音)
-  const spoken = reply.length > 300 ? `${reply.slice(0, 300)}……` : reply
+  const cleaned = cleanForTts(reply)
+  const spoken = cleaned.length > 300 ? `${cleaned.slice(0, 300)}……` : cleaned
   try {
     const r = await fetch('/api/xiaoguai/voice/tts', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -449,9 +473,11 @@ interface WakeService {
   audioCtx: AudioContext
   analyser: AnalyserNode
   recorder: MediaRecorder | null
+  /** 预滚缓冲: 待机期间持续录制的最近块(音量门限触发时词头不丢) */
+  ringChunks: Blob[]
+  /** armed期间新产生的块 */
   chunks: Blob[]
   timer: number
-  // 状态: idle待命 | armed(音量超阈,采集中) | cooldown(判定后冷却)
   state: 'idle' | 'armed' | 'cooldown'
   armedAt: number
   cancelled: boolean
@@ -474,7 +500,20 @@ async function wakeStart(): Promise<void> {
     const analyser = audioCtx.createAnalyser()
     analyser.fftSize = 512
     src.connect(analyser)
-    wake = { stream, audioCtx, analyser, recorder: null, chunks: [], timer: 0, state: 'idle', armedAt: 0, cancelled: false }
+    wake = { stream, audioCtx, analyser, recorder: null, ringChunks: [], chunks: [], timer: 0, state: 'idle', armedAt: 0, cancelled: false }
+    // 预滚: 待机持续录制,ring保留最近~1.5s(6块x250ms)
+    const ringRec = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+    ringRec.ondataavailable = (e) => {
+      const w = wake
+      if (w === null || e.data.size === 0) return
+      if (w.state === 'idle') {
+        w.ringChunks.push(e.data)
+        if (w.ringChunks.length > 6) w.ringChunks.shift()
+      } else if (w.state === 'armed') {
+        w.chunks.push(e.data)
+      }
+    }
+    ringRec.start(250)
     const buf = new Float32Array(analyser.fftSize)
     wake.timer = window.setInterval(async () => {
       const w = wake
@@ -494,42 +533,27 @@ async function wakeStart(): Promise<void> {
         ;(w as unknown as { __peak?: number }).__peak = 0
       }
       if (w.state === 'idle' && rms > WAKE_VOLUME_THRESHOLD) {
-        // 疑似说话→armed: 开始录音
+        // 疑似说话→armed。词头已在预滚缓冲里(120ms轮询的起音延迟不再吃词头)
         w.state = 'armed'
-        // TODO(诊断): 唤醒链路排查用,修复后移除
-        console.log(`[xg-wake] ARMED rms=${rms.toFixed(3)}`)
+        console.log(`[xg-wake] ARMED rms=${rms.toFixed(3)} ring=${w.ringChunks.length}块`)
         setUi({ bubble: `🎙 采集唤醒音频中(音量${rms.toFixed(3)})…`, bubbleAt: Date.now() })
         w.armedAt = now
         w.chunks = []
-        try {
-          w.recorder = new MediaRecorder(w.stream, { mimeType: 'audio/webm' })
-          w.recorder.ondataavailable = (e) => { if (e.data.size > 0) w.chunks.push(e.data) }
-          w.recorder.start(250)
-        } catch { w.state = 'idle'; return }
       } else if (w.state === 'armed') {
         if (now - w.armedAt >= WAKE_ARM_MS) {
-          // 采集窗口结束→判定
-          const rec = w.recorder
-          w.recorder = null
+          // 采集窗口结束→判定: 预滚ring(词头)+armed块(词身)拼接
           w.state = 'cooldown'
-          if (rec !== null && rec.state !== 'inactive') {
-            const blob: Blob = await new Promise((resolve) => {
-              rec.onstop = () => resolve(new Blob(w.chunks, { type: 'audio/webm' }))
-              rec.stop()
-            })
-            void wakeJudge(blob)
+          const all = [...w.ringChunks, ...w.chunks]
+          w.ringChunks = []; w.chunks = []
+          if (all.length > 0) {
+            void wakeJudge(new Blob(all, { type: 'audio/webm' }))
           }
           setTimeout(() => { if (wake !== null && wake.state === 'cooldown') wake.state = 'idle' }, WAKE_COOLDOWN_MS)
         } else if (rms < WAKE_VOLUME_THRESHOLD * 0.15 && now - w.armedAt > 1200) {
           // 明确长静默(噪声误触后的真安静)→放弃。放宽到0.15x/1.2s:
           // 之前0.4x/0.6s把"小乖小乖"的字间停顿误判为结束,没说完就回待机
-          const rec = w.recorder
-          w.recorder = null
           w.state = 'cooldown'
-          if (rec !== null && rec.state !== 'inactive') {
-            rec.onstop = () => undefined
-            rec.stop()
-          }
+          w.ringChunks = []; w.chunks = []
           setTimeout(() => { if (wake !== null && wake.state === 'cooldown') wake.state = 'idle' }, 800)
         }
       }
@@ -546,7 +570,7 @@ function wakeStop(): void {
   wake = null
   if (w === null) return
   window.clearInterval(w.timer)
-  if (w.recorder !== null && w.state === 'armed') { w.recorder.onstop = () => undefined; w.recorder.stop() }
+  if (w.recorder !== null && w.recorder.state !== 'inactive') { w.recorder.onstop = () => undefined; w.recorder.stop() }
   w.stream.getTracks().forEach(t => t.stop())
   void w.audioCtx.close()
 }

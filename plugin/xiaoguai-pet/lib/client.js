@@ -270,6 +270,23 @@ function setVoiceLevels(levels) {
   for (const l of voiceLevelListeners) l();
 }
 var lastReplySeen = "";
+function cleanForTts(text) {
+  let t = text;
+  t = t.replace(/```[\s\S]*?```/g, "\uFF0C\u4EE3\u7801\u7565\uFF0C");
+  t = t.replace(/`([^`]+)`/g, "$1");
+  t = t.replace(/\*\*([^*]+)\*\*/g, "$1");
+  t = t.replace(/\*([^*]+)\*/g, "$1");
+  t = t.replace(/~~([^~]+)~~/g, "$1");
+  t = t.replace(/^#{1,6}\s*/gm, "");
+  t = t.replace(/^\s*[-*+]\s+/gm, "");
+  t = t.replace(/^>\s?/gm, "");
+  t = t.replace(/\|/g, " ");
+  t = t.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+  t = t.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/gu, "");
+  t = t.replace(/[*#~`>_]+/g, " ");
+  t = t.replace(/\s{2,}/g, " ").trim();
+  return t;
+}
 async function speakFeedback() {
   for (let i = 0; i < 60; i++) {
     await new Promise((r) => setTimeout(r, 1e3));
@@ -287,7 +304,8 @@ async function speakFeedback() {
   }
   if (reply.length === 0) reply = "\u4EFB\u52A1\u5B8C\u6210\u5566\uFF01";
   lastReplySeen = reply;
-  const spoken = reply.length > 300 ? `${reply.slice(0, 300)}\u2026\u2026` : reply;
+  const cleaned = cleanForTts(reply);
+  const spoken = cleaned.length > 300 ? `${cleaned.slice(0, 300)}\u2026\u2026` : cleaned;
   try {
     const r = await fetch("/api/xiaoguai/voice/tts", {
       method: "POST",
@@ -389,7 +407,19 @@ async function wakeStart() {
     const analyser = audioCtx.createAnalyser();
     analyser.fftSize = 512;
     src.connect(analyser);
-    wake = { stream, audioCtx, analyser, recorder: null, chunks: [], timer: 0, state: "idle", armedAt: 0, cancelled: false };
+    wake = { stream, audioCtx, analyser, recorder: null, ringChunks: [], chunks: [], timer: 0, state: "idle", armedAt: 0, cancelled: false };
+    const ringRec = new MediaRecorder(stream, { mimeType: "audio/webm" });
+    ringRec.ondataavailable = (e) => {
+      const w = wake;
+      if (w === null || e.data.size === 0) return;
+      if (w.state === "idle") {
+        w.ringChunks.push(e.data);
+        if (w.ringChunks.length > 6) w.ringChunks.shift();
+      } else if (w.state === "armed") {
+        w.chunks.push(e.data);
+      }
+    };
+    ringRec.start(250);
     const buf = new Float32Array(analyser.fftSize);
     wake.timer = window.setInterval(async () => {
       const w = wake;
@@ -411,43 +441,26 @@ async function wakeStart() {
       }
       if (w.state === "idle" && rms > WAKE_VOLUME_THRESHOLD) {
         w.state = "armed";
-        console.log(`[xg-wake] ARMED rms=${rms.toFixed(3)}`);
+        console.log(`[xg-wake] ARMED rms=${rms.toFixed(3)} ring=${w.ringChunks.length}\u5757`);
         setUi({ bubble: `\u{1F399} \u91C7\u96C6\u5524\u9192\u97F3\u9891\u4E2D(\u97F3\u91CF${rms.toFixed(3)})\u2026`, bubbleAt: Date.now() });
         w.armedAt = now;
         w.chunks = [];
-        try {
-          w.recorder = new MediaRecorder(w.stream, { mimeType: "audio/webm" });
-          w.recorder.ondataavailable = (e) => {
-            if (e.data.size > 0) w.chunks.push(e.data);
-          };
-          w.recorder.start(250);
-        } catch {
-          w.state = "idle";
-          return;
-        }
       } else if (w.state === "armed") {
         if (now - w.armedAt >= WAKE_ARM_MS) {
-          const rec = w.recorder;
-          w.recorder = null;
           w.state = "cooldown";
-          if (rec !== null && rec.state !== "inactive") {
-            const blob = await new Promise((resolve) => {
-              rec.onstop = () => resolve(new Blob(w.chunks, { type: "audio/webm" }));
-              rec.stop();
-            });
-            void wakeJudge(blob);
+          const all = [...w.ringChunks, ...w.chunks];
+          w.ringChunks = [];
+          w.chunks = [];
+          if (all.length > 0) {
+            void wakeJudge(new Blob(all, { type: "audio/webm" }));
           }
           setTimeout(() => {
             if (wake !== null && wake.state === "cooldown") wake.state = "idle";
           }, WAKE_COOLDOWN_MS);
         } else if (rms < WAKE_VOLUME_THRESHOLD * 0.15 && now - w.armedAt > 1200) {
-          const rec = w.recorder;
-          w.recorder = null;
           w.state = "cooldown";
-          if (rec !== null && rec.state !== "inactive") {
-            rec.onstop = () => void 0;
-            rec.stop();
-          }
+          w.ringChunks = [];
+          w.chunks = [];
           setTimeout(() => {
             if (wake !== null && wake.state === "cooldown") wake.state = "idle";
           }, 800);
@@ -464,7 +477,7 @@ function wakeStop() {
   wake = null;
   if (w === null) return;
   window.clearInterval(w.timer);
-  if (w.recorder !== null && w.state === "armed") {
+  if (w.recorder !== null && w.recorder.state !== "inactive") {
     w.recorder.onstop = () => void 0;
     w.recorder.stop();
   }
