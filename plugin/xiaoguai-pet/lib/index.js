@@ -431,6 +431,8 @@ var XiaoguaiService = class extends Service {
   async voiceSend(text) {
     const trimmed = text.trim();
     if (trimmed.length === 0) return { ok: false, error: "empty", bubble: "\u5C0F\u4E56\u6CA1\u542C\u6E05\uFF0C\u518D\u8BF4\u4E00\u6B21\uFF1F" };
+    const spokenTask = `[\u8BED\u97F3\u6A21\u5F0F] ${trimmed}
+(\u6B64\u6D88\u606F\u6765\u81EA\u8BED\u97F3\u52A9\u624B\u5C0F\u4E56,\u56DE\u590D\u5C06\u88AB\u8F6C\u6210\u8BED\u97F3\u64AD\u62A5:\u8BF7\u7528\u4E0D\u8D85\u8FC780\u5B57\u7684\u4E2D\u6587\u6982\u62EC\u4F5C\u7B54,\u76F4\u63A5\u8BF4\u7ED3\u8BBA,\u4E0D\u8981markdown\u683C\u5F0F/\u661F\u53F7/emoji/\u5217\u8868/\u4EE3\u7801\u5757,\u53EA\u8F93\u51FA\u9002\u5408\u6717\u8BFB\u7684\u7EAF\u6587\u5B57)`;
     try {
       const agents = this.ctx.agents;
       let agent = agents.list().at(-1);
@@ -443,7 +445,7 @@ var XiaoguaiService = class extends Service {
         agent = created.agent;
       }
       agent.followup(createUserMessage({
-        content: [{ type: "text", text: trimmed }],
+        content: [{ type: "text", text: spokenTask }],
         source: { kind: "user" }
       }));
       return { ok: true, bubble: "\u5C0F\u4E56\u6536\u5230\uFF0C\u8FD9\u5C31\u53BB\u529E\uFF01" };

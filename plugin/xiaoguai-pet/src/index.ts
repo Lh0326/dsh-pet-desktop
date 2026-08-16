@@ -258,6 +258,10 @@ export class XiaoguaiService extends Service {
   async voiceSend(text: string): Promise<{ ok: boolean; error?: string; bubble: string }> {
     const trimmed = text.trim()
     if (trimmed.length === 0) return { ok: false, error: 'empty', bubble: '小乖没听清，再说一次？' }
+    // 语音场景约束: 回复将被TTS念出——要求精简概括、纯文字
+    // (模型直接生成短回复,优于事后截断——截断会念半句)
+    const spokenTask = `[语音模式] ${trimmed}
+(此消息来自语音助手小乖,回复将被转成语音播报:请用不超过80字的中文概括作答,直接说结论,不要markdown格式/星号/emoji/列表/代码块,只输出适合朗读的纯文字)`
     try {
       const agents = this.ctx.agents
       let agent = agents.list().at(-1)   // 最近活跃的顶层会话
@@ -271,7 +275,7 @@ export class XiaoguaiService extends Service {
         agent = created.agent
       }
       agent.followup(createUserMessage({
-        content: [{ type: 'text', text: trimmed }],
+        content: [{ type: 'text', text: spokenTask }],
         source: { kind: 'user' },
       }))
       return { ok: true, bubble: '小乖收到，这就去办！' }
