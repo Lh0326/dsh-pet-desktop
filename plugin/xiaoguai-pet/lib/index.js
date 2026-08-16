@@ -235,6 +235,9 @@ var XiaoguaiService = class extends Service {
   affinity = { points: 0, pets: 0, feeds: 0, turns: 0 };
   lastPatAt = 0;
   lastFeedAt = 0;
+  /** 最近一条助手回复文本（语音播报用），按会话 seq 去重 */
+  lastAssistantText = "";
+  lastAssistantSeq = 0;
   persistPath;
   constructor(ctx) {
     super(ctx, "xiaoguai");
@@ -248,6 +251,20 @@ var XiaoguaiService = class extends Service {
     }
     ctx.on("session/event", (_s, event) => {
       switch (event.type) {
+        case "assistant/message": {
+          const msg = event.data.message;
+          if (msg?.content !== void 0 && msg?.source?.kind === "model") {
+            const seq = event.seq ?? 0;
+            if (seq > this.lastAssistantSeq) {
+              const text = msg.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+              if (text.length > 0) {
+                this.lastAssistantText = text;
+                this.lastAssistantSeq = seq;
+              }
+            }
+          }
+          break;
+        }
         case "turn/start":
           this.sessionActive = true;
           break;
@@ -312,7 +329,9 @@ var XiaoguaiService = class extends Service {
       phase: this.phase,
       sessionActive: this.sessionActive,
       display: { ...this.display },
-      affinity: this.affinityView()
+      affinity: this.affinityView(),
+      /** 最近助手回复(截断,语音播报轮询用) */
+      lastReply: this.lastAssistantText.slice(0, 800)
     };
   }
   /** RPC: 互动（含好感度结算，参考鲸鱼娘） */

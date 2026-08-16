@@ -251,21 +251,35 @@ function setVoiceLevels(levels) {
   voiceLevels = levels;
   for (const l of voiceLevelListeners) l();
 }
+var lastReplySeen = "";
 async function speakFeedback() {
   for (let i = 0; i < 60; i++) {
     await new Promise((r) => setTimeout(r, 1e3));
     const st = ui.snapshot;
     if (st?.animation === "done") break;
   }
+  let reply = "";
+  for (let i = 0; i < 5; i++) {
+    const st = ui.snapshot;
+    if (st?.lastReply !== void 0 && st.lastReply !== lastReplySeen && st.lastReply.length > 0) {
+      reply = st.lastReply;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 800));
+  }
+  if (reply.length === 0) reply = "\u4EFB\u52A1\u5B8C\u6210\u5566\uFF01";
+  lastReplySeen = reply;
+  const spoken = reply.length > 300 ? `${reply.slice(0, 300)}\u2026\u2026` : reply;
   try {
     const r = await fetch("/api/xiaoguai/voice/tts", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: "\u4EFB\u52A1\u5B8C\u6210\u5566\uFF01" })
+      body: JSON.stringify({ text: spoken })
     });
     if (!r.ok) return;
     const { audio_mp3 } = await r.json();
     setUi({ local: "speaking" });
+    setUi({ bubble: "\u{1F50A} \u6B63\u5728\u64AD\u62A5\u56DE\u590D\u2026", bubbleAt: Date.now() });
     await playBase64Mp3(audio_mp3);
   } catch {
   }

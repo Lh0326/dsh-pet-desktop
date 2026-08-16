@@ -21,6 +21,7 @@ interface StateView {
   sessionActive: boolean
   bubble?: string
   display: { size: number; right: number; bottom: number; visible: boolean }
+  lastReply?: string
   affinity: {
     points: number
     rank: string
@@ -307,21 +308,40 @@ function setVoiceLevels(levels: number[] | null): void {
   for (const l of voiceLevelListeners) l()
 }
 
+/** 语音播报轮询用的会话起点（只播报语音发起后的新回复） */
+let speakSinceSeq = 0
+let lastReplySeen = ''
+
 async function speakFeedback(): Promise<void> {
-  // 简单版: 等done相位→TTS固定话术(后续接真实回复文本)
+  // 等 done 相位(最多60s)→取 lastReply 真实回复→TTS播报
   for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 1000))
     const st = ui.snapshot
     if (st?.animation === 'done') break
   }
+  // 再等最后一条assistant消息落到state(轮询延迟容错)
+  let reply = ''
+  for (let i = 0; i < 5; i++) {
+    const st = ui.snapshot
+    if (st?.lastReply !== undefined && st.lastReply !== lastReplySeen && st.lastReply.length > 0) {
+      reply = st.lastReply
+      break
+    }
+    await new Promise(r => setTimeout(r, 800))
+  }
+  if (reply.length === 0) reply = '任务完成啦！'
+  lastReplySeen = reply
+  // 播报文本: 回复可能很长,只播前300字(约1分钟语音)
+  const spoken = reply.length > 300 ? `${reply.slice(0, 300)}……` : reply
   try {
     const r = await fetch('/api/xiaoguai/voice/tts', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: '任务完成啦！' }),
+      body: JSON.stringify({ text: spoken }),
     })
     if (!r.ok) return
     const { audio_mp3 } = await r.json() as { audio_mp3: string }
     setUi({ local: 'speaking' })
+    setUi({ bubble: '🔊 正在播报回复…', bubbleAt: Date.now() })
     await playBase64Mp3(audio_mp3)
   } catch { /* TTS失败静默 */ }
   setUi({ local: null })

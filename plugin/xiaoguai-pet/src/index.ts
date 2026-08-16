@@ -69,6 +69,8 @@ export interface XiaoguaiStateView {
   bubble?: string
   display: XiaoguaiDisplay
   affinity: XiaoguaiAffinity
+  /** 最近助手回复文本(截断,语音播报用) */
+  lastReply: string
 }
 
 interface PersistShape {
@@ -92,6 +94,9 @@ export class XiaoguaiService extends Service {
   private affinity = { points: 0, pets: 0, feeds: 0, turns: 0 }
   private lastPatAt = 0
   private lastFeedAt = 0
+  /** 最近一条助手回复文本（语音播报用），按会话 seq 去重 */
+  private lastAssistantText = ''
+  private lastAssistantSeq = 0
   private readonly persistPath: string
 
   constructor(ctx: Context) {
@@ -108,6 +113,24 @@ export class XiaoguaiService extends Service {
 
     ctx.on('session/event', (_s: Session, event: SessionEvent) => {
       switch (event.type) {
+        case 'assistant/message': {
+          // 缓存最后一条模型回复文本(供语音播报取用;只认 source.kind==='model',
+          // 排除 agent setup 等非模型来源)
+          const msg = (event.data as { message?: { content?: Array<{ type: string; text?: string }>; source?: { kind?: string } } }).message
+          if (msg?.content !== undefined && msg?.source?.kind === 'model') {
+            const seq = (event as unknown as { seq?: number }).seq ?? 0
+            if (seq > this.lastAssistantSeq) {
+              const text = msg.content
+                .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+                .map(b => b.text).join('').trim()
+              if (text.length > 0) {
+                this.lastAssistantText = text
+                this.lastAssistantSeq = seq
+              }
+            }
+          }
+          break
+        }
         case 'turn/start':
           this.sessionActive = true
           break
@@ -176,6 +199,8 @@ export class XiaoguaiService extends Service {
       sessionActive: this.sessionActive,
       display: { ...this.display },
       affinity: this.affinityView(),
+      /** 最近助手回复(截断,语音播报轮询用) */
+      lastReply: this.lastAssistantText.slice(0, 800),
     }
   }
 
