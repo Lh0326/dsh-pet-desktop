@@ -366,6 +366,9 @@ async function speakFeedback(): Promise<void> {
     if (st?.animation === 'done') break
   }
   sfxDone()   // 任务完成提示音(播报摘要前奏)
+  // 立即进入speaking动画——掩盖summarize+tts的1-4秒准备空窗
+  // (此前空窗回落idle,出现"播报中却待机"的错位)
+  setUi({ local: 'speaking' })
   // 再等最后一条assistant消息落到state(轮询延迟容错)
   let reply = ''
   for (let i = 0; i < 5; i++) {
@@ -815,7 +818,9 @@ function XiaoguaiFloat(): ReactElement {
           if (st.elapsed >= frameMs) {
             st.index = frameCount - 1
             st.finished = true
-            if (anim !== 'pet-drag') setUi({ local: null })
+            // 只有local仍是本动画时才回落——播报流程(done→speaking交接)
+            // 可能已把local切到speaking,不能误清(播报中显示idle的根因)
+            if (anim !== 'pet-drag' && ui.local === anim) setUi({ local: null })
           }
         } else {
           const phase = st.elapsed % (frameMs * frameCount)

@@ -293,6 +293,7 @@ async function speakFeedback() {
     if (st?.animation === "done") break;
   }
   sfxDone();
+  setUi({ local: "speaking" });
   let reply = "";
   for (let i = 0; i < 5; i++) {
     const st = ui.snapshot;
@@ -741,7 +742,7 @@ function XiaoguaiFloat() {
           if (st.elapsed >= frameMs) {
             st.index = frameCount - 1;
             st.finished = true;
-            if (anim !== "pet-drag") setUi({ local: null });
+            if (anim !== "pet-drag" && ui.local === anim) setUi({ local: null });
           }
         } else {
           const phase = st.elapsed % (frameMs * frameCount);
