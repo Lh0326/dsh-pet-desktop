@@ -39,13 +39,13 @@ function requireMethod(req: IncomingMessage, res: ServerResponse, method: string
   return false
 }
 
-function readJsonBody(req: IncomingMessage): Promise<unknown> {
+function readJsonBody(req: IncomingMessage, maxBytes = 16 * 1024): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let size = 0
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => {
       size += chunk.length
-      if (size > 16 * 1024) {
+      if (size > maxBytes) {
         reject(new Error('body-too-large'))
         queueMicrotask(() => req.destroy())
         return
@@ -74,12 +74,12 @@ function getRoute(path: string, run: () => Promise<unknown> | unknown): WebRoute
   }
 }
 
-function postRoute(path: string, run: (body: Record<string, unknown>) => Promise<unknown> | unknown): WebRoute {
+function postRoute(path: string, run: (body: Record<string, unknown>) => Promise<unknown> | unknown, maxBytes = 16 * 1024): WebRoute {
   return {
     kind: 'exact', path,
     handler: (req, res) => {
       if (!requireMethod(req, res, 'POST')) return
-      readJsonBody(req).then((body) => {
+      readJsonBody(req, maxBytes).then((body) => {
         const record = (typeof body === 'object' && body !== null) ? body as Record<string, unknown> : {}
         Promise.resolve(run(record)).then(
           (v) => json(res, 200, v),
@@ -116,12 +116,59 @@ function assetRoutes(packageRoot: string): WebRoute[] {
   }))
 }
 
+
+/** 语音链路路由（host 侧桥接本地 ASR/TTS 服务）
+ *  POST /api/xiaoguai/voice/asr  {audio_wav: base64}      → {text}
+ *  POST /api/xiaoguai/voice/tts  {text}                   → {audio_mp3: base64}
+ *  ASR: 127.0.0.1:9340 (FunASR/SenseVoice, voice/asr_server.py)
+ *  TTS: edge-tts 直接进程调用（无需常驻服务） */
+import { spawn } from 'node:child_process'
+import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join as pathJoin } from 'node:path'
+
+const ASR_URL = 'http://127.0.0.1:9340/asr'
+
+async function bridgeAsr(body: Record<string, unknown>): Promise<unknown> {
+  const audioB64 = body.audio_wav
+  if (typeof audioB64 !== 'string') throw new Error('invalid-audio')
+  const resp = await fetch(ASR_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ audio_wav: audioB64 }),
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!resp.ok) throw new Error(`asr-upstream-${resp.status}`)
+  return resp.json()
+}
+
+async function bridgeTts(body: Record<string, unknown>): Promise<unknown> {
+  const text = body.text
+  if (typeof text !== 'string' || text.length === 0 || text.length > 500) throw new Error('invalid-text')
+  const dir = await mkdtemp(pathJoin(tmpdir(), 'xg-tts-'))
+  try {
+    const mp3 = pathJoin(dir, 'out.mp3')
+    await new Promise<void>((resolve, reject) => {
+      // edge-tts CLI(已pip安装); -1 失败码
+      const child = spawn('edge-tts', ['--text', text, '--voice', 'zh-CN-XiaoyiNeural', '--write-media', mp3], { shell: true })
+      child.on('error', reject)
+      child.on('exit', (code) => { code === 0 ? resolve() : reject(new Error(`tts-exit-${code}`)) })
+    })
+    const buf = await readFile(mp3)
+    return { audio_mp3: buf.toString('base64') }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
 /** 完整路由族 */
 export function makeXiaoguaiRoutes(deps: { service: XiaoguaiService; packageRoot: string }): WebRoute[] {
   const { service, packageRoot } = deps
   return [
     getRoute(`${XG_API_PREFIX}/state`, () => service.state()),
     getRoute(`${XG_API_PREFIX}/diag`, () => ({ atlasHits: atlasHits(), time: Date.now() })),
+    postRoute(`${XG_API_PREFIX}/voice/asr`, bridgeAsr, 20 * 1024 * 1024),  // wav base64 可达数MB
+    postRoute(`${XG_API_PREFIX}/voice/tts`, bridgeTts),
     postRoute(`${XG_API_PREFIX}/interact`, (body) => {
       const kind = body.kind
       if (kind !== 'pat' && kind !== 'feed' && kind !== 'dragEnd' && kind !== 'hide' && kind !== 'summon') {

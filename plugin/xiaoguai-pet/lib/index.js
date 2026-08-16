@@ -4,8 +4,11 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join as join2, dirname } from "node:path";
 
 // src/routes.ts
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join as pathJoin } from "node:path";
 var XG_API_PREFIX = "/api/xiaoguai";
 var XG_ASSET_PREFIX = "/xiaoguai/assets";
 var ASSET_STATES = [
@@ -33,13 +36,13 @@ function requireMethod(req, res, method) {
   json(res, 405, { ok: false, error: "method-not-allowed" });
   return false;
 }
-function readJsonBody(req) {
+function readJsonBody(req, maxBytes = 16 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on("data", (chunk) => {
       size += chunk.length;
-      if (size > 16 * 1024) {
+      if (size > maxBytes) {
         reject(new Error("body-too-large"));
         queueMicrotask(() => req.destroy());
         return;
@@ -73,13 +76,13 @@ function getRoute(path, run) {
     }
   };
 }
-function postRoute(path, run) {
+function postRoute(path, run, maxBytes = 16 * 1024) {
   return {
     kind: "exact",
     path,
     handler: (req, res) => {
       if (!requireMethod(req, res, "POST")) return;
-      readJsonBody(req).then((body) => {
+      readJsonBody(req, maxBytes).then((body) => {
         const record = typeof body === "object" && body !== null ? body : {};
         Promise.resolve(run(record)).then(
           (v) => json(res, 200, v),
@@ -128,11 +131,46 @@ function assetRoutes(packageRoot) {
     }
   }));
 }
+var ASR_URL = "http://127.0.0.1:9340/asr";
+async function bridgeAsr(body) {
+  const audioB64 = body.audio_wav;
+  if (typeof audioB64 !== "string") throw new Error("invalid-audio");
+  const resp = await fetch(ASR_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ audio_wav: audioB64 }),
+    signal: AbortSignal.timeout(3e4)
+  });
+  if (!resp.ok) throw new Error(`asr-upstream-${resp.status}`);
+  return resp.json();
+}
+async function bridgeTts(body) {
+  const text = body.text;
+  if (typeof text !== "string" || text.length === 0 || text.length > 500) throw new Error("invalid-text");
+  const dir = await mkdtemp(pathJoin(tmpdir(), "xg-tts-"));
+  try {
+    const mp3 = pathJoin(dir, "out.mp3");
+    await new Promise((resolve, reject) => {
+      const child = spawn("edge-tts", ["--text", text, "--voice", "zh-CN-XiaoyiNeural", "--write-media", mp3], { shell: true });
+      child.on("error", reject);
+      child.on("exit", (code) => {
+        code === 0 ? resolve() : reject(new Error(`tts-exit-${code}`));
+      });
+    });
+    const buf = await readFile(mp3);
+    return { audio_mp3: buf.toString("base64") };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 function makeXiaoguaiRoutes(deps) {
   const { service, packageRoot } = deps;
   return [
     getRoute(`${XG_API_PREFIX}/state`, () => service.state()),
     getRoute(`${XG_API_PREFIX}/diag`, () => ({ atlasHits: atlasHits(), time: Date.now() })),
+    postRoute(`${XG_API_PREFIX}/voice/asr`, bridgeAsr, 20 * 1024 * 1024),
+    // wav base64 可达数MB
+    postRoute(`${XG_API_PREFIX}/voice/tts`, bridgeTts),
     postRoute(`${XG_API_PREFIX}/interact`, (body) => {
       const kind = body.kind;
       if (kind !== "pat" && kind !== "feed" && kind !== "dragEnd" && kind !== "hide" && kind !== "summon") {
