@@ -97,6 +97,9 @@ export class XiaoguaiService extends Service {
   /** 最近一条助手回复文本（语音播报用），按会话 seq 去重 */
   private lastAssistantText = ''
   private lastAssistantSeq = 0
+  /** 最近收到事件的会话(voice/send优先投递目标,取代list().at(-1)的
+   *  注册序猜测——孤儿会话曾导致followup投进死会话,turn静默不跑) */
+  private lastActiveSessionId = ''
   private readonly persistPath: string
 
   constructor(ctx: Context) {
@@ -111,7 +114,8 @@ export class XiaoguaiService extends Service {
       if (loaded.affinity) this.affinity = { ...this.affinity, ...loaded.affinity }
     } catch { /* 首次运行无持久化文件 */ }
 
-    ctx.on('session/event', (_s: Session, event: SessionEvent) => {
+    ctx.on('session/event', (s: Session, event: SessionEvent) => {
+      this.lastActiveSessionId = String(s.id)
       switch (event.type) {
         case 'assistant/message': {
           // 缓存最后一条模型回复文本(供语音播报取用;只认 source.kind==='model',
@@ -260,7 +264,12 @@ export class XiaoguaiService extends Service {
     if (trimmed.length === 0) return { ok: false, error: 'empty', bubble: '小乖没听清，再说一次？' }
     try {
       const agents = this.ctx.agents
-      let agent = agents.list().at(-1)   // 最近活跃的顶层会话
+      // 优先最近活跃会话(事件驱动追踪),fallback注册序最后——
+      // 曾因拿到孤儿会话导致followup静默无响应(回复0字,播报无概括)
+      let agent = this.lastActiveSessionId !== ''
+        ? agents.list().find(a => String(a.session.id) === this.lastActiveSessionId)
+        : undefined
+      if (agent === undefined) agent = agents.list().at(-1)
       if (agent === undefined) {
         // 没有会话——创建一个（cwd 用默认工作区）
         const { randomUUID } = await import('node:crypto')

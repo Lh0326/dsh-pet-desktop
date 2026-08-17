@@ -240,9 +240,13 @@ async function bridgeSummarize(body) {
     }),
     signal: AbortSignal.timeout(3e4)
   });
-  if (!resp.ok) return { summary: cleanTextForSpeech(text.slice(0, 160)) };
+  if (!resp.ok) {
+    console.log(`[xg-summarize] deepseek ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+    return { summary: cleanTextForSpeech(text.slice(0, 160)) };
+  }
   const data = await resp.json();
   const summary = data.choices?.[0]?.message?.content ?? "";
+  console.log(`[xg-summarize] ok ${summary.length}\u5B57`);
   return { summary: cleanTextForSpeech(summary) || cleanTextForSpeech(text.slice(0, 160)) };
 }
 function cleanTextForSpeech(text) {
@@ -329,6 +333,9 @@ var XiaoguaiService = class extends Service {
   /** 最近一条助手回复文本（语音播报用），按会话 seq 去重 */
   lastAssistantText = "";
   lastAssistantSeq = 0;
+  /** 最近收到事件的会话(voice/send优先投递目标,取代list().at(-1)的
+   *  注册序猜测——孤儿会话曾导致followup投进死会话,turn静默不跑) */
+  lastActiveSessionId = "";
   persistPath;
   constructor(ctx) {
     super(ctx, "xiaoguai");
@@ -340,7 +347,8 @@ var XiaoguaiService = class extends Service {
       if (loaded.affinity) this.affinity = { ...this.affinity, ...loaded.affinity };
     } catch {
     }
-    ctx.on("session/event", (_s, event) => {
+    ctx.on("session/event", (s, event) => {
+      this.lastActiveSessionId = String(s.id);
       switch (event.type) {
         case "assistant/message": {
           const msg = event.data.message;
@@ -479,7 +487,8 @@ var XiaoguaiService = class extends Service {
     if (trimmed.length === 0) return { ok: false, error: "empty", bubble: "\u5C0F\u4E56\u6CA1\u542C\u6E05\uFF0C\u518D\u8BF4\u4E00\u6B21\uFF1F" };
     try {
       const agents = this.ctx.agents;
-      let agent = agents.list().at(-1);
+      let agent = this.lastActiveSessionId !== "" ? agents.list().find((a) => String(a.session.id) === this.lastActiveSessionId) : void 0;
+      if (agent === void 0) agent = agents.list().at(-1);
       if (agent === void 0) {
         const { randomUUID } = await import("node:crypto");
         const created = await agents.create({

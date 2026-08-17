@@ -248,9 +248,13 @@ async function bridgeSummarize(body: Record<string, unknown>): Promise<unknown> 
     }),
     signal: AbortSignal.timeout(30_000),
   })
-  if (!resp.ok) return { summary: cleanTextForSpeech(text.slice(0, 160)) }
+  if (!resp.ok) {
+    console.log(`[xg-summarize] deepseek ${resp.status}: ${(await resp.text()).slice(0, 200)}`)
+    return { summary: cleanTextForSpeech(text.slice(0, 160)) }
+  }
   const data = await resp.json() as { choices?: Array<{ message?: { content?: string } }> }
   const summary = data.choices?.[0]?.message?.content ?? ''
+  console.log(`[xg-summarize] ok ${summary.length}字`)
   return { summary: cleanTextForSpeech(summary) || cleanTextForSpeech(text.slice(0, 160)) }
 }
 
